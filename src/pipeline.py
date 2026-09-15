@@ -22,6 +22,7 @@ class ResearchResult(BaseModel):
     search_time_sec: float = 0.0
     synthesis_time_sec: float = 0.0
     total_time_sec: float = 0.0
+    is_fallback: bool = False
     usage: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -108,6 +109,7 @@ class ResearchPipeline:
             search_time_sec=round(search_time, 2),
             synthesis_time_sec=round(synthesis_time, 2),
             total_time_sec=round(total_time, 2),
+            is_fallback=plan_output.is_fallback,
             usage=total_usage
         )
 

@@ -70,8 +70,9 @@ class SearchAgent:
         limit_per_query = max_results_per_query or settings.max_results_per_subquery
         logger.info(f"Executing multi-search across {len(queries)} sub-queries (limit={limit_per_query} each)")
 
+        # Map url -> index in all_results to retain highest-scoring result
+        url_to_index = {}
         all_results = []
-        seen_urls = set()
 
         for idx, sub_query in enumerate(queries, 1):
             try:
@@ -83,15 +84,21 @@ class SearchAgent:
 
                 for item in sub_results:
                     url = item.get("url", "").strip()
-                    # Deduplicate by URL
-                    if url and url in seen_urls:
-                        logger.debug(f"Skipping duplicate URL already retrieved: {url}")
-                        continue
-                    if url:
-                        seen_urls.add(url)
-                    
+                    score = item.get("score", 0.0)
                     item["matched_sub_query"] = sub_query
-                    all_results.append(item)
+
+                    if url and url in url_to_index:
+                        existing_idx = url_to_index[url]
+                        existing_score = all_results[existing_idx].get("score", 0.0)
+                        if score > existing_score:
+                            logger.debug(f"Updating duplicate URL '{url}' with higher score: {score} > {existing_score}")
+                            all_results[existing_idx] = item
+                        else:
+                            logger.debug(f"Skipping duplicate URL '{url}' with lower/equal score: {score} <= {existing_score}")
+                    else:
+                        if url:
+                            url_to_index[url] = len(all_results)
+                        all_results.append(item)
 
             except Exception as e:
                 logger.warning(f"Sub-query search failed for '{sub_query}': {e}. Continuing with remaining queries.")

@@ -34,13 +34,16 @@ def run_pipeline(query: str):
         result = pipeline.run(query=query)
 
         # Display Planner breakdown
-        print(Fore.GREEN + f"✅ Planner generated {len(result.sub_queries)} sub-queries in {result.planning_time_sec}s:")
-        for idx, sq in enumerate(result.sub_queries, 1):
-            print(Fore.CYAN + f"   [{idx}] " + Fore.WHITE + f"{sq}")
-        if result.plan_rationale:
-            print(Fore.LIGHTBLACK_EX + f"   Rationale: {result.plan_rationale}\n")
+        if result.is_fallback:
+            print(Fore.YELLOW + Style.BRIGHT + f"⚠️ [WARNING] Planner fallback was triggered (single query search):\n   Reason: {result.plan_rationale}\n")
         else:
-            print()
+            print(Fore.GREEN + f"✅ Planner generated {len(result.sub_queries)} sub-queries in {result.planning_time_sec}s:")
+            for idx, sq in enumerate(result.sub_queries, 1):
+                print(Fore.CYAN + f"   [{idx}] " + Fore.WHITE + f"{sq}")
+            if result.plan_rationale:
+                print(Fore.LIGHTBLACK_EX + f"   Rationale: {result.plan_rationale}\n")
+            else:
+                print()
 
         print(Fore.BLUE + f"🔍 [Step 2/3] Search Agent executing multi-search with URL deduplication...")
         print(Fore.GREEN + f"✅ Retrieved {len(result.search_results)} unique sources across all sub-queries in {result.search_time_sec}s\n")

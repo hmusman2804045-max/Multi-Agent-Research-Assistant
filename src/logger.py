@@ -6,11 +6,27 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 LOGS_DIR = BASE_DIR / "logs"
 
 
-def setup_logging(level: int = logging.INFO, log_to_file: bool = True, log_to_console: bool = False) -> None:
-    """Configures application-wide logging with file and optional console handlers."""
+class ColoredConsoleFormatter(logging.Formatter):
+    """Format console output with subtle colors for debug and warnings."""
+    
+    COLORS = {
+        logging.DEBUG: "\033[90m[DEBUG]\033[0m",
+        logging.INFO: "\033[36m[INFO]\033[0m",
+        logging.WARNING: "\033[33m[WARNING]\033[0m",
+        logging.ERROR: "\033[31m[ERROR]\033[0m",
+        logging.CRITICAL: "\033[41m[CRITICAL]\033[0m"
+    }
+
+    def format(self, record: logging.LogRecord) -> str:
+        level_tag = self.COLORS.get(record.levelno, f"[{record.levelname}]")
+        return f"{level_tag} [{record.name}] {record.getMessage()}"
+
+
+def setup_logging(level: int = logging.INFO, log_to_file: bool = True, log_to_console: bool = True) -> None:
+    """Configures application-wide logging with file and live console handlers."""
     handlers = []
 
-    # File Handler
+    # 1. File Handler (captures all events with timestamp and lineno)
     if log_to_file:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(LOGS_DIR / "research_assistant.log", encoding="utf-8")
@@ -22,13 +38,10 @@ def setup_logging(level: int = logging.INFO, log_to_file: bool = True, log_to_co
         file_handler.setLevel(level)
         handlers.append(file_handler)
 
-    # Console Handler (enabled if log_to_console=True or in DEBUG mode)
-    if log_to_console or level <= logging.DEBUG:
+    # 2. Live Console Stream Handler
+    if log_to_console:
         console_handler = logging.StreamHandler(sys.stdout)
-        console_formatter = logging.Formatter(
-            "\033[90m[DEBUG] [%(name)s] %(message)s\033[0m"
-        )
-        console_handler.setFormatter(console_formatter)
+        console_handler.setFormatter(ColoredConsoleFormatter())
         console_handler.setLevel(level)
         handlers.append(console_handler)
 

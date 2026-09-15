@@ -47,11 +47,14 @@ class TestPhase2PlannerAndMultiSearch(unittest.TestCase):
 
         results = search_agent.search_multi(["query 1", "query 2"], max_results_per_query=2)
 
-        # Should deduplicate https://example.com/shared and return 3 total unique items
+        # Should deduplicate https://example.com/shared and return 3 total unique items, retaining highest-scored version
         self.assertEqual(len(results), 3)
         unique_urls = [r["url"] for r in results]
         self.assertEqual(unique_urls, ["https://example.com/shared", "https://example.com/doc-b", "https://example.com/doc-c"])
-        self.assertEqual(results[0]["matched_sub_query"], "query 1")
+        # Verify higher-scored Doc A (0.95 from query 2) replaced the lower-scored one (0.9 from query 1)
+        self.assertEqual(results[0]["score"], 0.95)
+        self.assertEqual(results[0]["title"], "Doc A (Duplicate)")
+        self.assertEqual(results[0]["matched_sub_query"], "query 2")
         self.assertEqual(results[2]["matched_sub_query"], "query 2")
 
     @patch("src.pipeline.settings")

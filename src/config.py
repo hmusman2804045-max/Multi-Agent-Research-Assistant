@@ -23,6 +23,8 @@ class Settings(BaseModel):
     max_results_per_subquery: int = Field(default_factory=lambda: int(os.getenv("MAX_RESULTS_PER_SUBQUERY", "3")))
     temperature: float = Field(default_factory=lambda: float(os.getenv("TEMPERATURE", "0.2")))
     max_tokens: int = Field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "1024")))
+    planner_temperature: float = Field(default_factory=lambda: float(os.getenv("PLANNER_TEMPERATURE", "0.1")))
+    planner_max_tokens: int = Field(default_factory=lambda: int(os.getenv("PLANNER_MAX_TOKENS", "500")))
 
     def validate_keys(self) -> None:
         """Ensure required API keys are populated."""

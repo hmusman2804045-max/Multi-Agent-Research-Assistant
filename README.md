@@ -69,14 +69,15 @@ Traditional LLMs hallucinate or rely on frozen training data. Unlike standard st
 
 ---
 
-## 📊 Benchmarks & Telemetry (Phase 1 Baseline)
+## 📊 Benchmarks & Telemetry
 
-| Metric | Measured Value | Target | Status |
-| :--- | :--- | :--- | :--- |
-| **Search Latency (Tavily)** | ~0.95s – 4.0s | < 10.0s | ✅ Optimal |
-| **Synthesis Latency (Groq)** | ~2.1s – 3.2s | < 10.0s | ✅ Optimal |
-| **Total End-to-End Latency** | **~3.15s – 7.97s** | **< 30.0s** | ✅ **Well within target** |
-| **Cost Per Query** | **$0.00** (Free Developer Tier) | $0.00 | ✅ 100% Free |
+| Metric | Phase 1 (Single-Search) | Phase 2 (Planner + Multi-Search) | Target | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **Planning Latency (Groq)** | N/A | ~0.8s – 1.2s | < 3.0s | ✅ Sub-second |
+| **Search Latency (Tavily)** | ~0.95s – 4.0s | ~8.0s – 15.0s (3 sub-queries) | < 20.0s | ✅ Optimal |
+| **Synthesis Latency (Groq)** | ~2.1s – 3.2s | ~1.7s – 3.5s | < 10.0s | ✅ Optimal |
+| **Total End-to-End Latency** | **~3.15s – 7.97s** | **~10.5s – 18.0s** | **< 30.0s** | ✅ **Well within target** |
+| **Cost Per Query** | **$0.00** (Free Tier) | **$0.00** (Free Tier) | $0.00 | ✅ 100% Free |
 
 ---
 
@@ -85,22 +86,24 @@ Traditional LLMs hallucinate or rely on frozen training data. Unlike standard st
 ```
 Multi-Agent-Research-Assistant/
 ├── .gitignore               # Protection for secrets, logs, and venvs
-├── .env.example             # Configuration template
+├── .env.example             # Configuration template (includes Phase 2 settings)
 ├── requirements.txt         # Exact-pinned dependencies
-├── main.py                  # CLI entry point
+├── main.py                  # Interactive CLI entry point with fallback alerts
 ├── logs/                    # Runtime logs (gitignored)
 │   └── research_assistant.log
 ├── src/
 │   ├── __init__.py
-│   ├── config.py            # Settings validation & loader
-│   ├── logger.py            # Structured logging setup
-│   ├── pipeline.py          # Two-Agent Pipeline coordinator
+│   ├── config.py            # Settings validation & dynamic configuration
+│   ├── logger.py            # Centralized logging (live console streaming + file logging)
+│   ├── pipeline.py          # Three-Agent Pipeline coordinator (Planner -> Multi-Search -> Writer)
 │   └── agents/
 │       ├── __init__.py
-│       ├── search_agent.py  # Tavily Web Search agent
+│       ├── planner_agent.py # Query decomposition & JSON planning agent
+│       ├── search_agent.py  # Tavily Web Search & score-based URL deduplication
 │       └── writer_agent.py  # Groq Synthesis & Grounding agent
 └── tests/
-    └── test_phase1.py       # Automated unit & mock tests
+    ├── test_phase1.py       # Phase 1 unit & pipeline tests
+    └── test_phase2.py       # Phase 2 planner, deduplication & 3-agent tests
 ```
 
 ---
@@ -137,12 +140,23 @@ cp .env.example .env
 ```
 Edit `.env`:
 ```env
+# Groq API Configuration (Free tier: https://console.groq.com/)
 GROQ_API_KEY=gsk_your_groq_api_key_here
 GROQ_MODEL=openai/gpt-oss-20b
+
+# Tavily API Configuration (Free 1,000 searches/mo: https://tavily.com/)
 TAVILY_API_KEY=tvly-your_tavily_api_key_here
+
+# Pipeline Settings
 MAX_SEARCH_RESULTS=5
+MAX_SUB_QUERIES=3
+MAX_RESULTS_PER_SUBQUERY=3
+
+# Model Hyperparameters
 TEMPERATURE=0.2
 MAX_TOKENS=1024
+PLANNER_TEMPERATURE=0.1
+PLANNER_MAX_TOKENS=500
 ```
 
 ### 4. Run the Research Assistant
