@@ -3,7 +3,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![Groq](https://img.shields.io/badge/LLM%20Inference-Groq-orange.svg)](https://groq.com/)
 [![Tavily](https://img.shields.io/badge/Web%20Search-Tavily%20API-green.svg)](https://tavily.com/)
-[![Phase](https://img.shields.io/badge/Status-Phase%201%20(PoC%20Verified)-success.svg)](https://github.com/hmusman2804045-max/Multi-Agent-Research-Assistant)
+[![Phase](https://img.shields.io/badge/Status-Phase%202%20(Planner%20%2B%20Multi--Search%20Verified)-success.svg)](https://github.com/hmusman2804045-max/Multi-Agent-Research-Assistant)
 
 An autonomous multi-agent AI system designed to conduct live web research, cross-reference findings, and generate grounded, cited research reports with sub-second agent latency.
 
@@ -11,40 +11,48 @@ An autonomous multi-agent AI system designed to conduct live web research, cross
 
 ## 📌 Overview
 
-Traditional LLMs hallucinate or rely on frozen training data. Unlike standard static RAG (Retrieval-Augmented Generation) which only queries pre-uploaded documents, this **Multi-Agent Research Assistant** dynamically searches the live internet, extracts relevant context, and synthesizes structured reports with inline source citations.
+Traditional LLMs hallucinate or rely on frozen training data. Unlike standard static RAG (Retrieval-Augmented Generation) which only queries pre-uploaded documents, this **Multi-Agent Research Assistant** dynamically plans research strategies, searches the live internet across multiple focused angles, extracts relevant context, and synthesizes structured reports with inline source citations.
 
-### Current Milestone: **Phase 1 — Two-Agent Proof of Concept**
+### Current Milestone: **Phase 2 — Planner + Multi-Search Pipeline**
 
 ```
-┌─────────────────────────┐
-│     User Research       │
-│        Question         │
-└────────────┬────────────┘
-             │
-             ▼
-┌─────────────────────────┐      Tavily API
-│      Search Agent       │ ──────────────────►  Live Web Results
-└────────────┬────────────┘                     (Snippets + URLs)
-             │
-             ▼
-┌─────────────────────────┐      Groq Engine
-│      Writer Agent       │ ──────────────────►  Grounded Report
-└────────────┬────────────┘     (openai/gpt-oss-20b)     with Citations
-             │
-             ▼
-┌─────────────────────────┐
-│   Structured Output     │
-│   (Markdown + Sources)  │
-└─────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                 User Research Question                  │
+└────────────────────────────┬────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│                   🧠 Planner Agent                      │
+│   Deconstructs query into 2-4 focused sub-queries       │
+│   (Strict JSON / Pydantic schema validation + fallback) │
+└────────────────────────────┬────────────────────────────┘
+                             │
+            ┌────────────────┼────────────────┐
+            ▼                ▼                ▼
+     [Sub-Query 1]    [Sub-Query 2]    [Sub-Query 3]
+            │                │                │
+            └────────────────┼────────────────┘
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│                    🔍 Search Agent                      │
+│     Executes Tavily searches & deduplicates by URL      │
+└────────────────────────────┬────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│                    ✍️ Writer Agent                      │
+│     Synthesizes multi-angle context into cited report   │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## 🏗️ Architecture & Core Components
 
-- **Search Agent (`src/agents/search_agent.py`)**: Interacts with the **Tavily Search API** to fetch up-to-date web intelligence, extracting URLs, titles, and snippets.
+- **Planner Agent (`src/agents/planner_agent.py`)**: Analyzes research questions and produces 2–4 targeted sub-queries via deterministic JSON mode with automatic fallback.
+- **Search Agent (`src/agents/search_agent.py`)**: Interacts with the **Tavily Search API** to execute multi-query searches and performs **URL deduplication** across all retrieved sources.
 - **Writer Agent (`src/agents/writer_agent.py`)**: Interfaces with **Groq**'s ultra-low latency inference engine. Employs a strict grounding prompt that forbids hallucinations and requires inline bracketed references (`[1]`, `[2]`).
-- **Pipeline Coordinator (`src/pipeline.py`)**: Orchestrates the multi-agent execution loop and captures granular telemetry (search latency, synthesis latency, token consumption).
+- **Pipeline Coordinator (`src/pipeline.py`)**: Orchestrates the multi-agent execution loop (Planner $\rightarrow$ Multi-Search $\rightarrow$ Writer) and captures granular telemetry (planning latency, search latency, synthesis latency, token consumption).
 - **Centralized Logging (`src/logger.py`)**: Structured, thread-safe application logging to `logs/research_assistant.log` with optional live console streaming (`-v` / `--verbose`).
 - **Validated Configuration (`src/config.py`)**: Type-safe settings management using Pydantic and `python-dotenv`.
 
@@ -163,7 +171,7 @@ python -m unittest discover -s tests -p "test_*.py"
 ## 🗺️ Project Roadmap
 
 - [x] **Phase 1: Two-Agent Proof of Concept** — Search Agent + Writer Agent hand-off loop.
-- [ ] **Phase 2: Planner Agent** — Deconstruct user queries into 2–4 targeted sub-queries.
+- [x] **Phase 2: Planner Agent** — Deconstruct user queries into 2–4 targeted sub-queries with multi-search deduplication.
 - [ ] **Phase 3: Prompt Injection & Content Security** — Structural delimiters and sanitization of untrusted web content.
 - [ ] **Phase 4: Summarizer & Fact-Checker Agents** — Cross-reference sources and flag contradictions.
 - [ ] **Phase 5: Authentication & User Isolation** — Firebase Auth + MongoDB Atlas with dual-key (`user_id` + `session_id`) isolation.

@@ -13,28 +13,39 @@ if sys.platform == "win32":
 import logging
 from src.logger import setup_logging
 from src.config import settings, BASE_DIR
-from src.pipeline import TwoAgentPipeline
+from src.pipeline import ResearchPipeline
 
 init(autoreset=True)
 
 
 def print_banner():
     print(Fore.CYAN + Style.BRIGHT + "=" * 70)
-    print(Fore.CYAN + Style.BRIGHT + "   [*] Multi-Agent Research Assistant — Phase 1 (2-Agent PoC)")
-    print(Fore.CYAN + Style.BRIGHT + "   Search Agent (Tavily)  -->   Writer Agent (Groq / Qwen / Llama)")
+    print(Fore.CYAN + Style.BRIGHT + "   [*] Multi-Agent Research Assistant — Phase 2 (Planner + Multi-Search)")
+    print(Fore.CYAN + Style.BRIGHT + "   🧠 Planner  -->  🔍 Search (Deduplicated)  -->  ✍️ Writer")
     print(Fore.CYAN + Style.BRIGHT + "=" * 70 + "\n")
 
 
 def run_pipeline(query: str):
     print(Fore.YELLOW + f"📌 Research Question: " + Fore.WHITE + f"{query}\n")
-    print(Fore.BLUE + "🔍 [Step 1/2] Search Agent fetching live web context from Tavily...")
+    print(Fore.BLUE + "🧠 [Step 1/3] Planner Agent analyzing query and decomposing into sub-questions...")
 
     try:
-        pipeline = TwoAgentPipeline()
+        pipeline = ResearchPipeline()
         result = pipeline.run(query=query)
 
-        print(Fore.GREEN + f"✅ Found {len(result.search_results)} search sources in {result.search_time_sec}s")
-        print(Fore.MAGENTA + "✍️ [Step 2/2] Writer Agent synthesizing grounded report via Groq...")
+        # Display Planner breakdown
+        print(Fore.GREEN + f"✅ Planner generated {len(result.sub_queries)} sub-queries in {result.planning_time_sec}s:")
+        for idx, sq in enumerate(result.sub_queries, 1):
+            print(Fore.CYAN + f"   [{idx}] " + Fore.WHITE + f"{sq}")
+        if result.plan_rationale:
+            print(Fore.LIGHTBLACK_EX + f"   Rationale: {result.plan_rationale}\n")
+        else:
+            print()
+
+        print(Fore.BLUE + f"🔍 [Step 2/3] Search Agent executing multi-search with URL deduplication...")
+        print(Fore.GREEN + f"✅ Retrieved {len(result.search_results)} unique sources across all sub-queries in {result.search_time_sec}s\n")
+
+        print(Fore.MAGENTA + "✍️ [Step 3/3] Writer Agent synthesizing multi-angle context via Groq...")
         print(Fore.GREEN + f"✅ Synthesis completed in {result.synthesis_time_sec}s\n")
 
         print(Fore.CYAN + Style.BRIGHT + "-" * 70)
@@ -45,13 +56,14 @@ def run_pipeline(query: str):
 
         # Performance and Telemetry Box
         print(Fore.YELLOW + "\n📊 Performance & Telemetry:")
+        print(Fore.WHITE + f"  • Planning Latency:  {result.planning_time_sec}s")
         print(Fore.WHITE + f"  • Search Latency:    {result.search_time_sec}s")
         print(Fore.WHITE + f"  • Synthesis Latency: {result.synthesis_time_sec}s")
         print(Fore.GREEN + Style.BRIGHT + f"  • Total Time:        {result.total_time_sec}s (Target: <30s)")
         if result.usage:
             print(Fore.WHITE + f"  • Model Used:        {result.usage.get('model', 'N/A')}")
-            print(Fore.WHITE + f"  • Prompt Tokens:     {result.usage.get('prompt_tokens', 0)}")
-            print(Fore.WHITE + f"  • Output Tokens:     {result.usage.get('completion_tokens', 0)}")
+            print(Fore.WHITE + f"  • Planner Tokens:    {result.usage.get('planner_prompt_tokens', 0) + result.usage.get('planner_completion_tokens', 0)}")
+            print(Fore.WHITE + f"  • Writer Tokens:     {result.usage.get('writer_prompt_tokens', 0) + result.usage.get('writer_completion_tokens', 0)}")
             print(Fore.WHITE + f"  • Total Tokens:      {result.usage.get('total_tokens', 0)}")
         print(Fore.CYAN + "=" * 70 + "\n")
 
@@ -63,7 +75,7 @@ def run_pipeline(query: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Multi-Agent Research Assistant (Phase 1 CLI)")
+    parser = argparse.ArgumentParser(description="Multi-Agent Research Assistant (Phase 2 CLI)")
     parser.add_argument("-q", "--query", type=str, help="Research question to process")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging")
     args = parser.parse_args()

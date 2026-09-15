@@ -54,3 +54,47 @@ class SearchAgent:
         except Exception as e:
             logger.error(f"Search failed for query '{query}': {str(e)}")
             raise RuntimeError(f"Tavily Search API call failed: {str(e)}") from e
+
+    def search_multi(self, queries: List[str], max_results_per_query: int = None, search_depth: str = "advanced") -> List[Dict[str, Any]]:
+        """
+        Executes web searches across multiple sub-queries with URL-based deduplication.
+
+        Args:
+            queries: List of search sub-queries.
+            max_results_per_query: Max results per sub-query (defaults to config).
+            search_depth: "basic" or "advanced" search depth.
+
+        Returns:
+            Deduplicated list of search result dictionaries across all queries.
+        """
+        limit_per_query = max_results_per_query or settings.max_results_per_subquery
+        logger.info(f"Executing multi-search across {len(queries)} sub-queries (limit={limit_per_query} each)")
+
+        all_results = []
+        seen_urls = set()
+
+        for idx, sub_query in enumerate(queries, 1):
+            try:
+                sub_results = self.search(
+                    query=sub_query,
+                    max_results=limit_per_query,
+                    search_depth=search_depth
+                )
+
+                for item in sub_results:
+                    url = item.get("url", "").strip()
+                    # Deduplicate by URL
+                    if url and url in seen_urls:
+                        logger.debug(f"Skipping duplicate URL already retrieved: {url}")
+                        continue
+                    if url:
+                        seen_urls.add(url)
+                    
+                    item["matched_sub_query"] = sub_query
+                    all_results.append(item)
+
+            except Exception as e:
+                logger.warning(f"Sub-query search failed for '{sub_query}': {e}. Continuing with remaining queries.")
+
+        logger.info(f"Multi-search complete. Aggregated {len(all_results)} unique sources across {len(queries)} queries.")
+        return all_results

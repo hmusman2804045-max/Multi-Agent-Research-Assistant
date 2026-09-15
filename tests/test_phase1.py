@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 from src.config import Settings
+from src.agents.planner_agent import PlanOutput
 from src.agents.search_agent import SearchAgent
 from src.agents.writer_agent import WriterAgent
 from src.pipeline import TwoAgentPipeline, ResearchResult
@@ -35,6 +36,9 @@ class TestPhase1Pipeline(unittest.TestCase):
         mock_search_agent.search.return_value = [
             {"title": "AI Advancements", "url": "https://ai.example.com", "content": "AI is advancing rapidly.", "score": 0.9}
         ]
+        mock_search_agent.search_multi.return_value = [
+            {"title": "AI Advancements", "url": "https://ai.example.com", "content": "AI is advancing rapidly.", "score": 0.9}
+        ]
 
         mock_writer_agent = MagicMock()
         mock_writer_agent.synthesize.return_value = (
@@ -42,7 +46,17 @@ class TestPhase1Pipeline(unittest.TestCase):
             {"prompt_tokens": 50, "completion_tokens": 30, "total_tokens": 80, "model": "llama-3.1-70b-versatile"}
         )
 
-        pipeline = TwoAgentPipeline(search_agent=mock_search_agent, writer_agent=mock_writer_agent)
+        mock_planner_agent = MagicMock()
+        mock_planner_agent.plan.return_value = (
+            PlanOutput(sub_queries=["What are the latest AI advancements?"], rationale="Direct query"),
+            {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        )
+
+        pipeline = TwoAgentPipeline(
+            planner_agent=mock_planner_agent,
+            search_agent=mock_search_agent,
+            writer_agent=mock_writer_agent
+        )
         result = pipeline.run("What are the latest AI advancements?")
 
         self.assertIsInstance(result, ResearchResult)

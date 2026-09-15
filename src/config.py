@@ -19,6 +19,8 @@ class Settings(BaseModel):
     tavily_api_key: str = Field(default_factory=lambda: os.getenv("TAVILY_API_KEY", ""))
     groq_model: str = Field(default_factory=lambda: os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"))
     max_search_results: int = Field(default_factory=lambda: int(os.getenv("MAX_SEARCH_RESULTS", "5")))
+    max_sub_queries: int = Field(default_factory=lambda: int(os.getenv("MAX_SUB_QUERIES", "3")))
+    max_results_per_subquery: int = Field(default_factory=lambda: int(os.getenv("MAX_RESULTS_PER_SUBQUERY", "3")))
     temperature: float = Field(default_factory=lambda: float(os.getenv("TEMPERATURE", "0.2")))
     max_tokens: int = Field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "1024")))
 
