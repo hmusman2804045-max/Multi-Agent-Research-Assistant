@@ -23,10 +23,12 @@ class TestPhase1Pipeline(unittest.TestCase):
             {"title": "Test Title 2", "url": "https://example.com/2", "content": "Sample content 2", "score": 0.88},
         ]
         formatted = writer.format_search_context(mock_results)
-        self.assertIn("Source [1]: Test Title 1", formatted)
-        self.assertIn("https://example.com/1", formatted)
+        self.assertIn('<untrusted_source_content index="1"', formatted)
+        self.assertIn('title="Test Title 1"', formatted)
+        self.assertIn('url="https://example.com/1"', formatted)
         self.assertIn("Sample content 1", formatted)
-        self.assertIn("Source [2]: Test Title 2", formatted)
+        self.assertIn('<untrusted_source_content index="2"', formatted)
+        self.assertIn('title="Test Title 2"', formatted)
 
     @patch("src.pipeline.settings")
     def test_two_agent_pipeline_execution_mocked(self, mock_settings):

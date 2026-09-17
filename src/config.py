@@ -25,6 +25,8 @@ class Settings(BaseModel):
     max_tokens: int = Field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "1024")))
     planner_temperature: float = Field(default_factory=lambda: float(os.getenv("PLANNER_TEMPERATURE", "0.1")))
     planner_max_tokens: int = Field(default_factory=lambda: int(os.getenv("PLANNER_MAX_TOKENS", "500")))
+    max_query_length: int = Field(default_factory=lambda: int(os.getenv("MAX_QUERY_LENGTH", "500")))
+    max_content_chars_per_source: int = Field(default_factory=lambda: int(os.getenv("MAX_CONTENT_CHARS_PER_SOURCE", "1500")))
 
     def validate_keys(self) -> None:
         """Ensure required API keys are populated."""
