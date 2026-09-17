@@ -7,6 +7,7 @@ from src.config import settings
 from src.agents.planner_agent import PlannerAgent, PlanOutput
 from src.agents.search_agent import SearchAgent
 from src.agents.writer_agent import WriterAgent
+from src.security import sanitize_user_input
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +58,8 @@ class ResearchPipeline:
         Returns:
             ResearchResult with plan breakdown, cited report, and telemetry.
         """
-        if not query or not query.strip():
-            raise ValueError("Research query cannot be empty.")
-
-        query = query.strip()
+        # Validate and sanitize input query (Security & Token Guardrail)
+        query = sanitize_user_input(query)
         start_total = time.perf_counter()
 
         # Step 1: Execute Planner Agent

@@ -20,8 +20,8 @@ init(autoreset=True)
 
 def print_banner():
     print(Fore.CYAN + Style.BRIGHT + "=" * 70)
-    print(Fore.CYAN + Style.BRIGHT + "   [*] Multi-Agent Research Assistant — Phase 2 (Planner + Multi-Search)")
-    print(Fore.CYAN + Style.BRIGHT + "   🧠 Planner  -->  🔍 Search (Deduplicated)  -->  ✍️ Writer")
+    print(Fore.CYAN + Style.BRIGHT + "   [*] Multi-Agent Research Assistant — Phase 3 (Security Hardened)")
+    print(Fore.CYAN + Style.BRIGHT + "   🧠 Planner  -->  🔍 Search (Deduplicated)  -->  ✍️ Writer (Shielded)")
     print(Fore.CYAN + Style.BRIGHT + "=" * 70 + "\n")
 
 
