@@ -91,16 +91,12 @@ def sanitize_web_content(content: str, max_chars: Optional[int] = None) -> str:
 
 def escape_structural_tags(text: str) -> str:
     """
-    Neutralizes structural delimiter tags inside untrusted text to prevent
-    delimiter-breaking and prompt escape attacks.
+    Escapes structural XML/HTML characters (&, <, >, ", ') in untrusted text
+    to prevent delimiter breakout, attribute injection, and arbitrary tag forging.
     """
     if not text:
         return ""
-    # Escape opening and closing delimiter tags
-    text = text.replace("</untrusted_source_content>", "[escaped_closing_tag]")
-    text = text.replace("<untrusted_source_content>", "[escaped_opening_tag]")
-    text = re.sub(r"</?untrusted_source_content[^>]*>", "[escaped_tag]", text, flags=re.IGNORECASE)
-    return text
+    return html.escape(text, quote=True)
 
 
 def wrap_in_delimiters(
@@ -112,14 +108,14 @@ def wrap_in_delimiters(
 ) -> str:
     """
     Wraps an untrusted search result in strict structural XML-style delimiters
-    with tag-escaping and metadata attributes.
+    with full HTML/XML attribute and content escaping.
     """
     safe_title = escape_structural_tags(title.strip() if title else "Untitled Source")
     safe_url = escape_structural_tags(url.strip() if url else "N/A")
     sanitized_content = sanitize_web_content(content)
     safe_content = escape_structural_tags(sanitized_content)
 
-    query_attr = f' query="{escape_structural_tags(matched_query)}"' if matched_query else ""
+    query_attr = f' query="{escape_structural_tags(matched_query.strip())}"' if matched_query else ""
 
     return (
         f'<untrusted_source_content index="{source_id}" url="{safe_url}" title="{safe_title}"{query_attr}>\n'

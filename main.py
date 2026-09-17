@@ -78,7 +78,7 @@ def run_pipeline(query: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Multi-Agent Research Assistant (Phase 2 CLI)")
+    parser = argparse.ArgumentParser(description="Multi-Agent Research Assistant (Phase 3 CLI - Security Hardened)")
     parser.add_argument("-q", "--query", type=str, help="Research question to process")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging")
     args = parser.parse_args()
