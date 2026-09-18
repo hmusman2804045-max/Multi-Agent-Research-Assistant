@@ -25,6 +25,10 @@ class Settings(BaseModel):
     max_tokens: int = Field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "1024")))
     planner_temperature: float = Field(default_factory=lambda: float(os.getenv("PLANNER_TEMPERATURE", "0.1")))
     planner_max_tokens: int = Field(default_factory=lambda: int(os.getenv("PLANNER_MAX_TOKENS", "500")))
+    summarizer_temperature: float = Field(default_factory=lambda: float(os.getenv("SUMMARIZER_TEMPERATURE", "0.1")))
+    summarizer_max_tokens: int = Field(default_factory=lambda: int(os.getenv("SUMMARIZER_MAX_TOKENS", "1024")))
+    fact_checker_temperature: float = Field(default_factory=lambda: float(os.getenv("FACT_CHECKER_TEMPERATURE", "0.1")))
+    fact_checker_max_tokens: int = Field(default_factory=lambda: int(os.getenv("FACT_CHECKER_MAX_TOKENS", "1024")))
     max_query_length: int = Field(default_factory=lambda: int(os.getenv("MAX_QUERY_LENGTH", "500")))
     max_content_chars_per_source: int = Field(default_factory=lambda: int(os.getenv("MAX_CONTENT_CHARS_PER_SOURCE", "1500")))
 

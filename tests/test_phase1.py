@@ -2,6 +2,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 from src.config import Settings
 from src.agents.planner_agent import PlanOutput
+from src.agents.summarizer_agent import SummaryOutput
+from src.agents.fact_checker_agent import FactCheckOutput
 from src.agents.search_agent import SearchAgent
 from src.agents.writer_agent import WriterAgent
 from src.pipeline import TwoAgentPipeline, ResearchResult
@@ -54,9 +56,17 @@ class TestPhase1Pipeline(unittest.TestCase):
             {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         )
 
+        mock_summarizer = MagicMock()
+        mock_summarizer.summarize.return_value = (SummaryOutput(sources=[], is_fallback=False), {"total_tokens": 0})
+
+        mock_fact_checker = MagicMock()
+        mock_fact_checker.verify.return_value = (FactCheckOutput(consensus_facts=[], unique_facts=[], contradictions=[], is_fallback=False), {"total_tokens": 0})
+
         pipeline = TwoAgentPipeline(
             planner_agent=mock_planner_agent,
             search_agent=mock_search_agent,
+            summarizer_agent=mock_summarizer,
+            fact_checker_agent=mock_fact_checker,
             writer_agent=mock_writer_agent
         )
         result = pipeline.run("What are the latest AI advancements?")
