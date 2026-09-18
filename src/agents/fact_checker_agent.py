@@ -194,7 +194,8 @@ class FactCheckerAgent:
             unique_list = []
             for item in data.get("unique_facts", []):
                 fact_text = str(item.get("fact", "")).strip()
-                src_id = int(item.get("source_id", 1))
+                raw_src = item.get("source_id", 1)
+                src_id = int(raw_src) if str(raw_src).isdigit() else 1
                 if fact_text:
                     unique_list.append(UniqueFact(fact=fact_text, source_id=src_id))
 
