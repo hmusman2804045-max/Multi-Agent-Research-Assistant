@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 from src.agents.planner_agent import PlannerAgent, PlanOutput
+from src.agents.summarizer_agent import SummaryOutput
+from src.agents.fact_checker_agent import FactCheckOutput
 from src.agents.search_agent import SearchAgent
 from src.pipeline import ResearchPipeline, ResearchResult
 
@@ -83,9 +85,17 @@ class TestPhase2PlannerAndMultiSearch(unittest.TestCase):
             {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150, "model": "openai/gpt-oss-20b"}
         )
 
+        mock_summarizer = MagicMock()
+        mock_summarizer.summarize.return_value = (SummaryOutput(sources=[], is_fallback=False), {"total_tokens": 0})
+
+        mock_fact_checker = MagicMock()
+        mock_fact_checker.verify.return_value = (FactCheckOutput(consensus_facts=[], unique_facts=[], contradictions=[], is_fallback=False), {"total_tokens": 0})
+
         pipeline = ResearchPipeline(
             planner_agent=mock_planner,
             search_agent=mock_search,
+            summarizer_agent=mock_summarizer,
+            fact_checker_agent=mock_fact_checker,
             writer_agent=mock_writer
         )
 

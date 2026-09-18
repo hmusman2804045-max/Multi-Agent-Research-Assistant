@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 from src.config import settings
 from src.agents.planner_agent import PlannerAgent, PlanOutput
 from src.agents.search_agent import SearchAgent
+from src.agents.summarizer_agent import SummarizerAgent, SummaryOutput
+from src.agents.fact_checker_agent import FactCheckerAgent, FactCheckOutput
 from src.agents.writer_agent import WriterAgent
 from src.security import sanitize_user_input
 
@@ -13,14 +15,18 @@ logger = logging.getLogger(__name__)
 
 
 class ResearchResult(BaseModel):
-    """Container for the output of a research pipeline execution."""
+    """Container for the output of a 5-agent research pipeline execution."""
     query: str
     sub_queries: List[str] = Field(default_factory=list)
     plan_rationale: str = ""
     report: str
-    search_results: List[Dict[str, Any]]
+    search_results: List[Dict[str, Any]] = Field(default_factory=list)
+    summary_output: Optional[SummaryOutput] = None
+    fact_check_output: Optional[FactCheckOutput] = None
     planning_time_sec: float = 0.0
     search_time_sec: float = 0.0
+    summarization_time_sec: float = 0.0
+    fact_check_time_sec: float = 0.0
     synthesis_time_sec: float = 0.0
     total_time_sec: float = 0.0
     is_fallback: bool = False
@@ -28,17 +34,21 @@ class ResearchResult(BaseModel):
 
 
 class ResearchPipeline:
-    """Three-Agent Pipeline coordinating PlannerAgent, SearchAgent, and WriterAgent."""
+    """Five-Agent Pipeline coordinating Planner, Search, Summarizer, Fact-Checker, and Writer."""
 
     def __init__(
         self,
         planner_agent: Optional[PlannerAgent] = None,
         search_agent: Optional[SearchAgent] = None,
+        summarizer_agent: Optional[SummarizerAgent] = None,
+        fact_checker_agent: Optional[FactCheckerAgent] = None,
         writer_agent: Optional[WriterAgent] = None
     ):
         settings.validate_keys()
         self.planner_agent = planner_agent or PlannerAgent()
         self.search_agent = search_agent or SearchAgent()
+        self.summarizer_agent = summarizer_agent or SummarizerAgent()
+        self.fact_checker_agent = fact_checker_agent or FactCheckerAgent()
         self.writer_agent = writer_agent or WriterAgent()
 
     def run(
@@ -48,7 +58,7 @@ class ResearchPipeline:
         max_results_per_subquery: Optional[int] = None
     ) -> ResearchResult:
         """
-        Executes the full 3-agent research loop (Plan -> Multi-Search -> Write).
+        Executes the full 5-agent research loop (Plan -> Search -> Summarize -> FactCheck -> Write).
 
         Args:
             query: The research question.
@@ -56,9 +66,9 @@ class ResearchPipeline:
             max_results_per_subquery: Optional override for results per sub-query.
 
         Returns:
-            ResearchResult with plan breakdown, cited report, and telemetry.
+            ResearchResult with plan breakdown, verified claims, cited report, and granular telemetry.
         """
-        # Validate and sanitize input query (Security & Token Guardrail)
+        # Validate and sanitize input query at the pipeline entry gate
         query = sanitize_user_input(query)
         start_total = time.perf_counter()
 
@@ -70,7 +80,7 @@ class ResearchPipeline:
         )
         planning_time = time.perf_counter() - start_planning
 
-        # Step 2: Execute Search Agent (Multi-Query with URL Deduplication)
+        # Step 2: Execute Search Agent (Multi-Query with Score-Based URL Deduplication)
         start_search = time.perf_counter()
         search_results = self.search_agent.search_multi(
             queries=plan_output.sub_queries,
@@ -78,25 +88,51 @@ class ResearchPipeline:
         )
         search_time = time.perf_counter() - start_search
 
-        # Step 3: Execute Writer Agent
+        # Step 3: Execute Summarizer Agent (Claim Extraction & Noise Distillation)
+        start_summarization = time.perf_counter()
+        summary_output, summarizer_usage = self.summarizer_agent.summarize(
+            search_results=search_results
+        )
+        summarization_time = time.perf_counter() - start_summarization
+
+        # Step 4: Execute Fact-Checker Agent (Cross-Referencing & Contradiction Detection)
+        start_fact_check = time.perf_counter()
+        fact_check_output, fact_check_usage = self.fact_checker_agent.verify(
+            query=query,
+            summary_output=summary_output
+        )
+        fact_check_time = time.perf_counter() - start_fact_check
+
+        # Step 5: Execute Writer Agent (Synthesizes Verified Claims & Flags Conflicts)
         start_synthesis = time.perf_counter()
         report, writer_usage = self.writer_agent.synthesize(
             query=query,
-            search_results=search_results
+            search_results=search_results,
+            fact_check_output=fact_check_output,
+            summary_output=summary_output
         )
         synthesis_time = time.perf_counter() - start_synthesis
 
         total_time = time.perf_counter() - start_total
 
-        # Aggregate total token usage across all LLM agents
+        # Aggregate total token usage across all 4 LLM agents
+        total_tokens = (
+            planner_usage.get("total_tokens", 0) +
+            summarizer_usage.get("total_tokens", 0) +
+            fact_check_usage.get("total_tokens", 0) +
+            writer_usage.get("total_tokens", 0)
+        )
+
         total_usage = {
             "model": writer_usage.get("model", settings.groq_model),
-            "planner_prompt_tokens": planner_usage.get("prompt_tokens", 0),
-            "planner_completion_tokens": planner_usage.get("completion_tokens", 0),
-            "writer_prompt_tokens": writer_usage.get("prompt_tokens", 0),
-            "writer_completion_tokens": writer_usage.get("completion_tokens", 0),
-            "total_tokens": planner_usage.get("total_tokens", 0) + writer_usage.get("total_tokens", 0)
+            "planner_tokens": planner_usage.get("total_tokens", 0),
+            "summarizer_tokens": summarizer_usage.get("total_tokens", 0),
+            "fact_checker_tokens": fact_check_usage.get("total_tokens", 0),
+            "writer_tokens": writer_usage.get("total_tokens", 0),
+            "total_tokens": total_tokens
         }
+
+        is_any_fallback = plan_output.is_fallback or summary_output.is_fallback or fact_check_output.is_fallback
 
         return ResearchResult(
             query=query,
@@ -104,11 +140,15 @@ class ResearchPipeline:
             plan_rationale=plan_output.rationale,
             report=report,
             search_results=search_results,
+            summary_output=summary_output,
+            fact_check_output=fact_check_output,
             planning_time_sec=round(planning_time, 2),
             search_time_sec=round(search_time, 2),
+            summarization_time_sec=round(summarization_time, 2),
+            fact_check_time_sec=round(fact_check_time, 2),
             synthesis_time_sec=round(synthesis_time, 2),
             total_time_sec=round(total_time, 2),
-            is_fallback=plan_output.is_fallback,
+            is_fallback=is_any_fallback,
             usage=total_usage
         )
 
