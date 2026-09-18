@@ -118,6 +118,51 @@ class TestPhase4SummarizerAndFactChecker(unittest.TestCase):
         self.assertEqual(output.contradictions[0].topic, "Parameter Count")
         self.assertEqual(usage["total_tokens"], 180)
 
+    def test_fact_checker_agent_parses_non_numeric_source_ids_gracefully(self):
+        fact_checker = FactCheckerAgent(api_key="mock_key", model="openai/gpt-oss-20b")
+        mock_raw_json = (
+            "{\n"
+            '  "consensus_facts": [\n'
+            '    {"fact": "Core consensus statement", "supporting_sources": ["1", "source_2", 3]}\n'
+            "  ],\n"
+            '  "unique_facts": [\n'
+            '    {"fact": "Unique observation with string id", "source_id": "N/A"},\n'
+            '    {"fact": "Second observation with valid numeric id", "source_id": 2}\n'
+            "  ],\n"
+            '  "contradictions": [\n'
+            "    {\n"
+            '      "topic": "Conflict Topic",\n'
+            '      "conflict": "Source [1] states A whereas Source [2] states B",\n'
+            '      "conflicting_sources": [1, 2]\n'
+            "    }\n"
+            "  ],\n"
+            '  "verification_summary": "Full analysis completed successfully."\n'
+            "}"
+        )
+
+        mock_choice = MagicMock()
+        mock_choice.message.content = mock_raw_json
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+
+        fact_checker.client.chat.completions.create = MagicMock(return_value=mock_response)
+
+        summary_input = SummaryOutput(sources=[
+            SourceSummary(source_id=1, title="Src 1", url="https://a.com", key_claims=["Claim 1"]),
+            SourceSummary(source_id=2, title="Src 2", url="https://b.com", key_claims=["Claim 2"])
+        ])
+
+        output, usage = fact_checker.verify("Test Query", summary_input)
+
+        # Must NOT fallback - all valid consensus and contradictions must be preserved!
+        self.assertFalse(output.is_fallback)
+        self.assertEqual(len(output.consensus_facts), 1)
+        self.assertEqual(output.consensus_facts[0].supporting_sources, [1, 3])  # 'source_2' filtered safely
+        self.assertEqual(len(output.unique_facts), 2)
+        self.assertEqual(output.unique_facts[0].source_id, 1)  # Defaulted safely from 'N/A'
+        self.assertEqual(output.unique_facts[1].source_id, 2)
+        self.assertEqual(len(output.contradictions), 1)
+
     def test_fact_checker_agent_fallback_on_invalid_json(self):
         fact_checker = FactCheckerAgent(api_key="mock_key", model="openai/gpt-oss-20b")
         
