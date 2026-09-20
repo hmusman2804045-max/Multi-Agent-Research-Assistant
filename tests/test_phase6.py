@@ -317,5 +317,39 @@ class TestGlobalAggregateBudgetProtection(unittest.TestCase):
         self.assertIn("Service-wide shared research capacity reached", str(ctx.exception))
 
 
+class TestAtomicConcurrencyProtection(unittest.TestCase):
+    """Test race-condition immunity under concurrent multi-threaded requests."""
+
+    def setUp(self):
+        self.storage = ResearchStorage(force_mock=True, db_name="test_concurrency_db")
+        self.limiter = RateLimiter(storage=self.storage)
+        self.user = "concurrent_user"
+
+    def test_concurrent_requests_strictly_respect_daily_cap(self):
+        """20 parallel threads racing against daily_query_limit (10) must result in exactly 10 successes and 10 blocks."""
+        import concurrent.futures
+
+        # Temporarily increase RPM limit so burst doesn't mask daily cap
+        with patch.object(settings, "requests_per_minute_limit", 100):
+            def try_query():
+                try:
+                    self.limiter.check_and_consume(self.user)
+                    return True
+                except DailyLimitExceededError:
+                    return False
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+                results = list(executor.map(lambda _: try_query(), range(20)))
+
+            successes = sum(1 for r in results if r)
+            failures = sum(1 for r in results if not r)
+
+            self.assertEqual(successes, settings.daily_query_limit)
+            self.assertEqual(failures, 20 - settings.daily_query_limit)
+
+            rec = self.storage.get_rate_limit_record(self.user)
+            self.assertEqual(rec["daily_count"], settings.daily_query_limit)
+
+
 if __name__ == "__main__":
     unittest.main()

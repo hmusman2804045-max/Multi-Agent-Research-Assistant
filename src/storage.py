@@ -10,8 +10,8 @@ Features:
 - Zero cross-user data leakage by architectural enforcement
 """
 
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 import pymongo
 from pymongo import MongoClient
@@ -198,6 +198,105 @@ class ResearchStorage:
             {"$set": record},
             upsert=True,
         )
+
+    def atomic_check_and_consume_quota(
+        self,
+        user_id: str,
+        daily_limit: int,
+        rpm_limit: int,
+        now_dt: datetime,
+    ) -> Tuple[bool, Optional[str], Dict[str, Any], int]:
+        """Atomically evaluate rate limits and consume one allocation using MongoDB atomic operators.
+
+        Protects against race conditions across concurrent requests/threads/workers.
+
+        Args:
+            user_id: The target user identifier.
+            daily_limit: Maximum allowed queries per day.
+            rpm_limit: Maximum allowed requests per minute.
+            now_dt: Current UTC datetime.
+
+        Returns:
+            Tuple of (success: bool, error_type: Optional[str], record: Dict[str, Any], retry_after: int)
+            error_type is 'rpm', 'daily', or None.
+        """
+        clean_user = _sanitize_key(user_id, "user_id")
+        now_ts = now_dt.timestamp()
+        today_str = now_dt.strftime("%Y-%m-%d")
+
+        # 1. Ensure record document exists
+        self.rate_limits_col.update_one(
+            {"user_id": clean_user},
+            {
+                "$setOnInsert": {
+                    "user_id": clean_user,
+                    "daily_date": today_str,
+                    "daily_count": 0,
+                    "minute_timestamps": [],
+                    "failed_login_attempts": 0,
+                    "lockout_until": None,
+                }
+            },
+            upsert=True,
+        )
+
+        # 2. Reset daily counter if a new UTC day has started
+        self.rate_limits_col.update_one(
+            {"user_id": clean_user, "daily_date": {"$ne": today_str}},
+            {
+                "$set": {
+                    "daily_date": today_str,
+                    "daily_count": 0,
+                    "minute_timestamps": [],
+                    "updated_at": now_dt,
+                }
+            },
+        )
+
+        # 3. Retrieve current record to inspect RPM timestamps window
+        rec = self.rate_limits_col.find_one({"user_id": clean_user})
+        raw_ts: List[float] = rec.get("minute_timestamps", []) if rec else []
+        recent_ts = [t for t in raw_ts if (now_ts - t) < 60.0]
+
+        # 4. Check RPM burst limit
+        if len(recent_ts) >= rpm_limit:
+            oldest = min(recent_ts) if recent_ts else now_ts
+            retry_after = max(1, int(60.0 - (now_ts - oldest)))
+            return False, "rpm", rec or {}, retry_after
+
+        # 5. Check Daily quota limit
+        current_daily = int(rec.get("daily_count", 0)) if rec and rec.get("daily_date") == today_str else 0
+        if current_daily >= daily_limit:
+            tomorrow = (now_dt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            secs_to_reset = max(1, int((tomorrow - now_dt).total_seconds()))
+            return False, "daily", rec or {}, secs_to_reset
+
+        # 6. Atomic increment and timestamp append with concurrency guard filter
+        updated_doc = self.rate_limits_col.find_one_and_update(
+            {
+                "user_id": clean_user,
+                "daily_date": today_str,
+                "daily_count": {"$lt": daily_limit},
+            },
+            {
+                "$inc": {"daily_count": 1},
+                "$set": {
+                    "minute_timestamps": recent_ts + [now_ts],
+                    "updated_at": now_dt,
+                },
+            },
+            return_document=pymongo.ReturnDocument.AFTER,
+        )
+
+        if not updated_doc:
+            # Concurrency race: another thread consumed the final available slot
+            rec = self.rate_limits_col.find_one({"user_id": clean_user})
+            tomorrow = (now_dt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            secs_to_reset = max(1, int((tomorrow - now_dt).total_seconds()))
+            return False, "daily", rec or {}, secs_to_reset
+
+        updated_doc.pop("_id", None)
+        return True, None, updated_doc, 0
 
     def save_session(self, session: ResearchSessionDocument) -> str:
         """Persist or update a research session document using dual-key filtering.
