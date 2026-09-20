@@ -62,12 +62,15 @@ class TestPhase1Pipeline(unittest.TestCase):
         mock_fact_checker = MagicMock()
         mock_fact_checker.verify.return_value = (FactCheckOutput(consensus_facts=[], unique_facts=[], contradictions=[], is_fallback=False), {"total_tokens": 0})
 
+        from src.storage import ResearchStorage
+        test_storage = ResearchStorage(force_mock=True, db_name="test_phase1_db")
         pipeline = TwoAgentPipeline(
             planner_agent=mock_planner_agent,
             search_agent=mock_search_agent,
             summarizer_agent=mock_summarizer,
             fact_checker_agent=mock_fact_checker,
-            writer_agent=mock_writer_agent
+            writer_agent=mock_writer_agent,
+            storage=test_storage,
         )
         result = pipeline.run("What are the latest AI advancements?")
 

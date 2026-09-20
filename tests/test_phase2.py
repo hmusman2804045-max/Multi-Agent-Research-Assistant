@@ -91,12 +91,15 @@ class TestPhase2PlannerAndMultiSearch(unittest.TestCase):
         mock_fact_checker = MagicMock()
         mock_fact_checker.verify.return_value = (FactCheckOutput(consensus_facts=[], unique_facts=[], contradictions=[], is_fallback=False), {"total_tokens": 0})
 
+        from src.storage import ResearchStorage
+        test_storage = ResearchStorage(force_mock=True, db_name="test_phase2_db")
         pipeline = ResearchPipeline(
             planner_agent=mock_planner,
             search_agent=mock_search,
             summarizer_agent=mock_summarizer,
             fact_checker_agent=mock_fact_checker,
-            writer_agent=mock_writer
+            writer_agent=mock_writer,
+            storage=test_storage,
         )
 
         result = pipeline.run("Complex multi-part question")
