@@ -24,6 +24,9 @@ from src.rate_limiter import (
     AccountLockedError,
 )
 from src.auth import register_user, authenticate_user, InvalidCredentialsError
+from src.agents.planner_agent import PlanOutput
+from src.agents.summarizer_agent import SummaryOutput
+from src.agents.fact_checker_agent import FactCheckOutput
 from src.pipeline import ResearchPipeline, ResearchResult
 
 
@@ -217,6 +220,101 @@ class TestPipelineGateInterception(unittest.TestCase):
         # Verify zero LLM or Search calls were made!
         mock_planner.plan.assert_not_called()
         mock_search.search_multi.assert_not_called()
+
+    @patch("src.config.Settings.validate_keys")
+    def test_invalid_query_does_not_consume_quota(self, mock_validate):
+        """Ensure invalid or malicious queries fail fast WITHOUT burning user search allocation."""
+        mock_validate.return_value = None
+        mock_planner = MagicMock()
+        mock_search = MagicMock()
+        mock_storage = ResearchStorage(force_mock=True)
+        limiter = RateLimiter(storage=mock_storage)
+
+        pipeline = ResearchPipeline(
+            planner_agent=mock_planner,
+            search_agent=mock_search,
+            storage=mock_storage,
+            rate_limiter=limiter,
+        )
+
+        user = "careful_user"
+
+        # 1. Test empty query fails validation
+        with self.assertRaises(ValueError):
+            pipeline.run(query="", user_id=user)
+
+        # 2. Test oversized query (>500 chars) fails validation
+        oversized = "A" * 501
+        with self.assertRaises(ValueError):
+            pipeline.run(query=oversized, user_id=user)
+
+        # 3. Assert rate limit record for user still has 0 daily_count
+        rec = mock_storage.get_rate_limit_record(user)
+        self.assertEqual(rec.get("daily_count", 0), 0)
+        self.assertEqual(len(rec.get("minute_timestamps", [])), 0)
+
+    @patch("src.config.Settings.validate_keys")
+    def test_guest_session_scoping_avoids_global_lockout(self, mock_validate):
+        """Ensure guest mode scoped with session_id isolates quota across unauthenticated sessions."""
+        mock_validate.return_value = None
+        mock_planner = MagicMock()
+        mock_search = MagicMock()
+        mock_summarizer = MagicMock()
+        mock_fact_checker = MagicMock()
+        mock_writer = MagicMock()
+
+        mock_planner.plan.return_value = (PlanOutput(sub_queries=["q1"], rationale="Plan ok"), {})
+        mock_search.search_multi.return_value = [{"title": "T", "url": "https://a.com", "content": "C"}]
+        mock_summarizer.summarize.return_value = (SummaryOutput(sources=[]), {})
+        mock_fact_checker.verify.return_value = (FactCheckOutput(consensus_facts=[], unique_facts=[], contradictions=[]), {})
+        mock_writer.synthesize.return_value = ("Report", {})
+
+        mock_storage = ResearchStorage(force_mock=True)
+        limiter = RateLimiter(storage=mock_storage)
+
+        pipeline = ResearchPipeline(
+            planner_agent=mock_planner,
+            search_agent=mock_search,
+            summarizer_agent=mock_summarizer,
+            fact_checker_agent=mock_fact_checker,
+            writer_agent=mock_writer,
+            storage=mock_storage,
+            rate_limiter=limiter,
+        )
+
+        # Guest Session A executes a query
+        res_a = pipeline.run(query="Guest question 1", session_id="cli_session_a")
+        self.assertEqual(res_a.quota_status.user_id, "guest_cli_session_a")
+        self.assertEqual(res_a.quota_status.daily_used, 1)
+
+        # Guest Session B executes a query with independent quota
+        res_b = pipeline.run(query="Guest question 2", session_id="cli_session_b")
+        self.assertEqual(res_b.quota_status.user_id, "guest_cli_session_b")
+        self.assertEqual(res_b.quota_status.daily_used, 1)
+
+
+class TestGlobalAggregateBudgetProtection(unittest.TestCase):
+    """Test global service-wide search query budget protection."""
+
+    def setUp(self):
+        self.storage = ResearchStorage(force_mock=True, db_name="test_global_budget_db")
+        self.limiter = RateLimiter(storage=self.storage)
+
+    def test_global_aggregate_cap_blocks_when_exhausted(self):
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # Simulate global aggregate cap exhausted
+        self.storage.save_rate_limit_record("__global_aggregate__", {
+            "user_id": "__global_aggregate__",
+            "daily_date": today_str,
+            "daily_count": settings.global_daily_query_limit,
+            "minute_timestamps": [],
+        })
+
+        # Even a brand new user with 0 queries must be blocked by global capacity
+        with self.assertRaises(DailyLimitExceededError) as ctx:
+            self.limiter.check_and_consume("fresh_new_user")
+
+        self.assertIn("Service-wide shared research capacity reached", str(ctx.exception))
 
 
 if __name__ == "__main__":

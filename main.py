@@ -147,20 +147,28 @@ def handle_quota_status(storage: ResearchStorage, user_id: str):
     print(Fore.CYAN + Style.BRIGHT + "=" * 75 + "\n")
 
 
-def run_pipeline(query: str, user_id: Optional[str] = None, storage: Optional[ResearchStorage] = None):
-    effective_user = user_id or "guest"
+import uuid
+
+
+def run_pipeline(
+    query: str,
+    user_id: Optional[str] = None,
+    guest_id: Optional[str] = None,
+    storage: Optional[ResearchStorage] = None,
+):
+    effective_user = user_id or guest_id or "guest"
     print(Fore.YELLOW + f"📌 Research Question: " + Fore.WHITE + f"{query}")
     if user_id:
         print(Fore.GREEN + f"👤 Authenticated User: {user_id}\n")
     else:
-        print(Fore.LIGHTBLACK_EX + f"👤 Guest Mode (Session not saved to persistent account)\n")
+        print(Fore.LIGHTBLACK_EX + f"👤 Guest Mode ({effective_user} — Session not saved to persistent account)\n")
 
     try:
         pipeline = ResearchPipeline(storage=storage)
 
         # Step 1: Planning
         print(Fore.BLUE + "🧠 [Step 1/5] Planner Agent analyzing query and planning strategy...")
-        result = pipeline.run(query=query, user_id=user_id)
+        result = pipeline.run(query=query, user_id=user_id, session_id=guest_id if not user_id else None)
 
         if result.is_fallback:
             print(Fore.YELLOW + Style.BRIGHT + f"   ⚠️ Fallback activated: {result.plan_rationale}\n")
@@ -326,9 +334,10 @@ def main():
 
     # Flow 5: Execute Research Pipeline
     user_id = authenticated_identity.user_id if authenticated_identity else None
+    cli_guest_id = None if user_id else f"guest_cli_{uuid.uuid4().hex[:8]}"
 
     if args.query:
-        run_pipeline(args.query, user_id=user_id, storage=storage)
+        run_pipeline(args.query, user_id=user_id, guest_id=cli_guest_id, storage=storage)
     else:
         try:
             while True:
@@ -337,7 +346,7 @@ def main():
                     print(Fore.CYAN + "\nExiting. Happy researching! 👋")
                     break
                 print()
-                run_pipeline(user_input.strip(), user_id=user_id, storage=storage)
+                run_pipeline(user_input.strip(), user_id=user_id, guest_id=cli_guest_id, storage=storage)
         except KeyboardInterrupt:
             print(Fore.CYAN + "\n\nExiting. Happy researching! 👋")
             sys.exit(0)
