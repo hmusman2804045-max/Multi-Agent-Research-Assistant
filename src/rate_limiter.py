@@ -7,6 +7,7 @@ Implements:
 4. Full telemetry and QuotaStatus reporting.
 """
 
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
@@ -16,6 +17,7 @@ from src.storage import ResearchStorage
 from src.logger import get_logger
 
 logger = get_logger(__name__)
+_limiter_lock = threading.RLock()
 
 
 class RateLimitExceededError(Exception):
@@ -64,7 +66,7 @@ class QuotaStatus(BaseModel):
 
 
 class RateLimiter:
-    """Rate Limiter enforcing daily query caps, burst RPM limits, and login lockout."""
+    """Rate Limiter enforcing daily query caps, burst RPM limits, and login lockout with atomic database safety."""
 
     def __init__(self, storage: Optional[ResearchStorage] = None) -> None:
         self.storage = storage or ResearchStorage()
@@ -78,6 +80,9 @@ class RateLimiter:
     def check_and_consume(self, user_id: str) -> QuotaStatus:
         """Check rate limits and atomically consume one query allocation.
 
+        Evaluates global service caps, per-user daily limits, and burst RPM windows
+        using atomic MongoDB operations ($inc, $set, find_one_and_update).
+
         Args:
             user_id: Unique user identifier.
 
@@ -89,103 +94,88 @@ class RateLimiter:
             DailyLimitExceededError: If the daily query allocation is exhausted.
         """
         clean_user = user_id.strip() if user_id else "guest"
-        record = self.storage.get_rate_limit_record(clean_user)
-
         now_dt = datetime.now(timezone.utc)
-        now_ts = now_dt.timestamp()
         today_str = now_dt.strftime("%Y-%m-%d")
 
-        # 1. Check Burst Rate Limit (Sliding 60-second window)
-        raw_timestamps: List[float] = record.get("minute_timestamps", [])
-        recent_timestamps = [t for t in raw_timestamps if (now_ts - t) < 60.0]
-
-        if len(recent_timestamps) >= settings.requests_per_minute_limit:
-            oldest = min(recent_timestamps)
-            retry_after = max(1, int(60.0 - (now_ts - oldest)))
-            logger.warning(
-                f"Rate limit exceeded (RPM) for user '{clean_user}'. "
-                f"Current: {len(recent_timestamps)}/{settings.requests_per_minute_limit} RPM. "
-                f"Retry after {retry_after}s."
-            )
-            raise BurstRateLimitExceededError(
-                f"Requests-per-minute limit reached ({settings.requests_per_minute_limit} req/min). "
-                f"Please wait {retry_after} second(s) before trying again.",
-                retry_after_seconds=retry_after,
-            )
-
-        # 2. Check Global Aggregate Cap (protects shared monthly Tavily budget across all users)
-        if settings.global_daily_query_limit > 0 and clean_user != "__global_aggregate__":
-            global_rec = self.storage.get_rate_limit_record("__global_aggregate__")
-            g_stored_date = global_rec.get("daily_date", "")
-            g_daily_count = int(global_rec.get("daily_count", 0)) if g_stored_date == today_str else 0
-            if g_daily_count >= settings.global_daily_query_limit:
-                secs_to_reset = self._seconds_until_midnight_utc()
-                hours = secs_to_reset // 3600
-                mins = (secs_to_reset % 3600) // 60
-                logger.warning(
-                    f"Global shared search quota exceeded across all users ({g_daily_count}/{settings.global_daily_query_limit})."
+        with _limiter_lock:
+            # 1. Evaluate & consume Global Aggregate Cap atomically
+            if settings.global_daily_query_limit > 0 and clean_user != "__global_aggregate__":
+                g_success, g_err, g_rec, g_retry = self.storage.atomic_check_and_consume_quota(
+                    user_id="__global_aggregate__",
+                    daily_limit=settings.global_daily_query_limit,
+                    rpm_limit=100000,
+                    now_dt=now_dt,
                 )
-                raise DailyLimitExceededError(
-                    f"Service-wide shared research capacity reached ({settings.global_daily_query_limit} queries/day total). "
-                    f"Shared quota resets at 00:00 UTC (in {hours}h {mins}m).",
-                    retry_after_seconds=secs_to_reset,
-                )
+                if not g_success:
+                    hours = g_retry // 3600
+                    mins = (g_retry % 3600) // 60
+                    logger.warning(
+                        f"Global shared search quota exceeded across all users ({g_rec.get('daily_count', settings.global_daily_query_limit)}/{settings.global_daily_query_limit})."
+                    )
+                    raise DailyLimitExceededError(
+                        f"Service-wide shared research capacity reached ({settings.global_daily_query_limit} queries/day total). "
+                        f"Shared quota resets at 00:00 UTC (in {hours}h {mins}m).",
+                        retry_after_seconds=g_retry,
+                    )
 
-        # 3. Check Per-User Daily Query Cap
-        stored_date = record.get("daily_date", "")
-        if stored_date == today_str:
-            daily_count = int(record.get("daily_count", 0))
-        else:
-            daily_count = 0
-
-        if daily_count >= settings.daily_query_limit:
-            secs_to_reset = self._seconds_until_midnight_utc()
-            hours = secs_to_reset // 3600
-            mins = (secs_to_reset % 3600) // 60
-            logger.warning(
-                f"Daily query quota exceeded for user '{clean_user}'. "
-                f"Used: {daily_count}/{settings.daily_query_limit}. Resets in {hours}h {mins}m."
-            )
-            raise DailyLimitExceededError(
-                f"Daily research quota reached ({settings.daily_query_limit} queries/day). "
-                f"Quota resets at 00:00 UTC (in {hours}h {mins}m).",
-                retry_after_seconds=secs_to_reset,
+            # 2. Evaluate & consume Per-User Quota & RPM atomically
+            success, err_type, rec, retry_after = self.storage.atomic_check_and_consume_quota(
+                user_id=clean_user,
+                daily_limit=settings.daily_query_limit,
+                rpm_limit=settings.requests_per_minute_limit,
+                now_dt=now_dt,
             )
 
-        # 4. Consume Quota
-        daily_count += 1
-        recent_timestamps.append(now_ts)
+            if not success:
+                # If per-user check failed, roll back global increment
+                if settings.global_daily_query_limit > 0 and clean_user != "__global_aggregate__":
+                    self.storage.rate_limits_col.update_one(
+                        {"user_id": "__global_aggregate__", "daily_date": today_str, "daily_count": {"$gt": 0}},
+                        {"$inc": {"daily_count": -1}},
+                    )
 
-        record["daily_date"] = today_str
-        record["daily_count"] = daily_count
-        record["minute_timestamps"] = recent_timestamps
+                if err_type == "rpm":
+                    logger.warning(
+                        f"Rate limit exceeded (RPM) for user '{clean_user}'. "
+                        f"Retry after {retry_after}s."
+                    )
+                    raise BurstRateLimitExceededError(
+                        f"Requests-per-minute limit reached ({settings.requests_per_minute_limit} req/min). "
+                        f"Please wait {retry_after} second(s) before trying again.",
+                        retry_after_seconds=retry_after,
+                    )
+                else:
+                    hours = retry_after // 3600
+                    mins = (retry_after % 3600) // 60
+                    daily_count = rec.get("daily_count", settings.daily_query_limit)
+                    logger.warning(
+                        f"Daily query quota exceeded for user '{clean_user}'. "
+                        f"Used: {daily_count}/{settings.daily_query_limit}. Resets in {hours}h {mins}m."
+                    )
+                    raise DailyLimitExceededError(
+                        f"Daily research quota reached ({settings.daily_query_limit} queries/day). "
+                        f"Quota resets at 00:00 UTC (in {hours}h {mins}m).",
+                        retry_after_seconds=retry_after,
+                    )
 
-        self.storage.save_rate_limit_record(clean_user, record)
+            daily_count = rec.get("daily_count", 1)
+            minute_ts = rec.get("minute_timestamps", [])
+            logger.info(
+                f"Consumed query quota for user '{clean_user}'. "
+                f"Daily: {daily_count}/{settings.daily_query_limit} | "
+                f"RPM: {len(minute_ts)}/{settings.requests_per_minute_limit}"
+            )
 
-        if settings.global_daily_query_limit > 0 and clean_user != "__global_aggregate__":
-            global_rec = self.storage.get_rate_limit_record("__global_aggregate__")
-            g_stored_date = global_rec.get("daily_date", "")
-            g_daily_count = int(global_rec.get("daily_count", 0)) if g_stored_date == today_str else 0
-            global_rec["daily_date"] = today_str
-            global_rec["daily_count"] = g_daily_count + 1
-            self.storage.save_rate_limit_record("__global_aggregate__", global_rec)
-
-        logger.info(
-            f"Consumed query quota for user '{clean_user}'. "
-            f"Daily: {daily_count}/{settings.daily_query_limit} | "
-            f"RPM: {len(recent_timestamps)}/{settings.requests_per_minute_limit}"
-        )
-
-        return QuotaStatus(
-            user_id=clean_user,
-            daily_used=daily_count,
-            daily_limit=settings.daily_query_limit,
-            daily_remaining=max(0, settings.daily_query_limit - daily_count),
-            rpm_used=len(recent_timestamps),
-            rpm_limit=settings.requests_per_minute_limit,
-            rpm_remaining=max(0, settings.requests_per_minute_limit - len(recent_timestamps)),
-            seconds_to_daily_reset=self._seconds_until_midnight_utc(),
-        )
+            return QuotaStatus(
+                user_id=clean_user,
+                daily_used=daily_count,
+                daily_limit=settings.daily_query_limit,
+                daily_remaining=max(0, settings.daily_query_limit - daily_count),
+                rpm_used=len(minute_ts),
+                rpm_limit=settings.requests_per_minute_limit,
+                rpm_remaining=max(0, settings.requests_per_minute_limit - len(minute_ts)),
+                seconds_to_daily_reset=self._seconds_until_midnight_utc(),
+            )
 
     def get_quota_status(self, user_id: str) -> QuotaStatus:
         """Inspect current user quota without consuming an allocation."""
