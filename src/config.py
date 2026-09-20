@@ -89,6 +89,28 @@ class Settings(BaseModel):
     password_reset_limit_per_hour: int = Field(default_factory=lambda: int(os.getenv("PASSWORD_RESET_LIMIT_PER_HOUR", "3")))
     password_reset_timing_floor_seconds: float = Field(default_factory=lambda: float(os.getenv("PASSWORD_RESET_TIMING_FLOOR_SECONDS", "0.35")))
 
+    # Web API & Frontend (Phase 7)
+    cors_allow_origins: str = Field(default_factory=lambda: os.getenv(
+        "CORS_ALLOW_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ))
+    api_host: str = Field(default_factory=lambda: os.getenv("API_HOST", "0.0.0.0"))
+    api_port: int = Field(default_factory=lambda: int(os.getenv("API_PORT", "7860")))
+    frontend_dist_dir: str = Field(default_factory=lambda: os.getenv("FRONTEND_DIST_DIR", "frontend/dist"))
+    password_reset_link_base_url: str = Field(default_factory=lambda: os.getenv("PASSWORD_RESET_LINK_BASE_URL", ""))
+
+    @property
+    def cors_origin_list(self) -> list:
+        """Parse the comma-separated CORS_ALLOW_ORIGINS value into a list of origins.
+
+        A single '*' entry allows any origin (credentials are not used by the web client,
+        which sends the JWT via the Authorization header rather than cookies).
+        """
+        raw = (self.cors_allow_origins or "").strip()
+        if not raw:
+            return []
+        return [o.strip() for o in raw.split(",") if o.strip()]
+
     def validate_keys(self) -> None:
         """Ensure required API keys and security credentials are valid."""
         missing = []

@@ -31,3 +31,13 @@ tiktoken==0.14.0
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 urllib3==2.7.0
+
+# --- Web API layer (Phase 7) ---
+fastapi==0.118.0
+starlette==0.48.0
+uvicorn==0.37.0
+click==8.5.0
+PyYAML==6.0.3
+httptools==0.8.0
+watchfiles==1.2.0
+websockets==17.1

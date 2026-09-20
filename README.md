@@ -1,3 +1,14 @@
+---
+title: Multi-Agent Research Assistant
+emoji: 🔎
+colorFrom: gray
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+license: mit
+---
+
 # 🤖 Multi-Agent Research Assistant
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
@@ -6,7 +17,7 @@
 [![MongoDB](https://img.shields.io/badge/Database-MongoDB%20%2F%20MongoMock-brightgreen.svg)](https://www.mongodb.com/)
 [![JWT](https://img.shields.io/badge/Auth-PyJWT%20(HS256)-blue.svg)](https://pyjwt.readthedocs.io/)
 [![Rate Limiter](https://img.shields.io/badge/Protection-Sliding%20Window%20%2B%20Lockout-red.svg)](https://github.com/hmusman2804045-max/Multi-Agent-Research-Assistant)
-[![Phase](https://img.shields.io/badge/Status-Phase%206%20(Rate%20Limiting%20%26%20Quotas)-success.svg)](https://github.com/hmusman2804045-max/Multi-Agent-Research-Assistant)
+[![Phase](https://img.shields.io/badge/Status-Phase%207%20(Frontend%20%26%20Deployment)-success.svg)](https://github.com/hmusman2804045-max/Multi-Agent-Research-Assistant)
 
 An autonomous multi-agent AI system designed to conduct live web research, distill factual claims, cross-reference sources, detect contradictions, generate grounded, cited research reports, securely isolate per-user research history, and enforce robust per-user daily search quotas, sliding-window RPM burst limits, and authentication brute-force defenses.
 
@@ -21,7 +32,7 @@ In **Phase 6**, the system introduces **per-user rate limiting & quota managemen
 2. **Requests-Per-Minute (RPM) Burst Limiter (3 req/min)**: Sliding-window counter protecting backend and Groq LLM inference from burst flooding.
 3. **Authentication Brute-Force Defense**: Progressive lockout (5 failed attempts $\rightarrow$ 15-minute lockout) neutralizing credential-stuffing attacks.
 
-### Current Milestone: **Phase 6 — Rate Limiting, User Quotas & Full Multi-Agent Pipeline**
+### Current Milestone: **Phase 7 — Web Frontend, HTTP/SSE API & Deployment**
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -160,6 +171,9 @@ Multi-Agent-Research-Assistant/
 ├── .env.example             # Configuration template (includes DB, JWT, Rate limits, and agent settings)
 ├── requirements.txt         # Exact-pinned dependencies
 ├── main.py                  # Interactive CLI entry point (with Auth, Rate Limiting & Quota telemetry)
+├── serve.py                 # Web entry point: runs the FastAPI API + built frontend on one origin
+├── Dockerfile               # Two-stage build (React -> FastAPI) for Hugging Face Spaces
+├── DEPLOYMENT.md            # Local run, Hugging Face Spaces deploy, secrets & budget notes
 ├── logs/                    # Runtime logs (gitignored)
 │   └── research_assistant.log
 ├── src/
@@ -172,6 +186,12 @@ Multi-Agent-Research-Assistant/
 │   ├── logger.py            # Centralized logging (live console streaming + file logging)
 │   ├── security.py          # Input sanitization & structural prompt injection defenses
 │   ├── pipeline.py          # Five-Agent Pipeline coordinator with rate limit interception
+│   ├── api/                 # Thin HTTP layer over the modules above - no duplicated logic
+│   │   ├── app.py           # FastAPI factory: CORS, error mapping, SPA static serving
+│   │   ├── deps.py          # Shared storage/pipeline handles, auth & guest-scope dependencies
+│   │   ├── errors.py        # Core exception -> HTTP status mapping (single source of truth)
+│   │   ├── schemas.py       # Request/response transport models
+│   │   └── routes/          # auth_routes, research_routes (SSE), history_routes, quota_routes
 │   └── agents/
 │       ├── __init__.py
 │       ├── planner_agent.py      # Query decomposition agent
@@ -179,6 +199,16 @@ Multi-Agent-Research-Assistant/
 │       ├── summarizer_agent.py   # Claim extraction & noise distillation agent
 │       ├── fact_checker_agent.py # Cross-referencing & contradiction detection agent
 │       └── writer_agent.py       # Shielded synthesis & grounding agent
+├── frontend/                # React + Vite SPA (glassmorphic charcoal/sage UI)
+│   ├── index.html
+│   ├── package.json
+│   └── src/
+│       ├── api/client.js        # Fetch wrapper + SSE stream parser
+│       ├── state/               # AuthContext (token, guest id), QuotaContext (both caps)
+│       ├── components/          # Ambient background, glass primitives, progress, report view
+│       └── pages/               # Landing, Auth, Forgot/Reset password, Research, History
+├── scripts/
+│   └── verify_phase7_isolation.py  # Live two-account cross-user isolation acceptance test
 └── tests/
     ├── test_phase1.py       # Phase 1 tests
     ├── test_phase2.py       # Phase 2 tests
@@ -186,7 +216,8 @@ Multi-Agent-Research-Assistant/
     ├── test_phase4.py       # Phase 4 summarization, fact-checking & 5-agent tests
     ├── test_phase5.py       # Phase 5 JWT authentication & dual-key storage isolation tests
     ├── test_phase6.py       # Phase 6 Rate limiting, quotas & brute-force lockout tests
-    └── test_password_reset.py # Password reset flow, email dispatch, anti-enumeration & token tests
+    ├── test_password_reset.py # Password reset flow, email dispatch, anti-enumeration & token tests
+    └── test_phase7_api.py   # Phase 7 HTTP API, SSE stream, rate-limit mapping & isolation tests
 ```
 
 ---
@@ -316,9 +347,33 @@ python main.py --token <YOUR_JWT_TOKEN> --delete-session <SESSION_ID>
 python main.py -q "Explain how gradient descent works"
 ```
 
-### 5. Run Automated Tests
+### 5. Run the Web App (Phase 7)
+
+Build the frontend once, then serve the API and the SPA together from one origin:
+
+```bash
+cd frontend && npm install && npm run build && cd ..
+python serve.py
+```
+
+Open <http://127.0.0.1:7860>. The REST/SSE API lives under `/api` and interactive docs at `/docs`.
+
+For frontend development with hot reload, run `python serve.py` in one shell and
+`npm run dev` inside `frontend/` in another, then open <http://localhost:5173> — Vite proxies
+`/api` through to the backend. Full deployment instructions, including Hugging Face Spaces and
+the secrets it needs, are in [DEPLOYMENT.md](DEPLOYMENT.md).
+
+### 6. Run Automated Tests
 ```bash
 python -m unittest discover -s tests -p "test_*.py"
+```
+
+The Phase 7 acceptance test runs against a live server rather than a test client. It registers
+two real accounts, runs real research as each, and confirms neither can list, open or delete the
+other's research:
+
+```bash
+python scripts/verify_phase7_isolation.py --base-url http://127.0.0.1:7860
 ```
 
 ---
@@ -331,7 +386,7 @@ python -m unittest discover -s tests -p "test_*.py"
 - [x] **Phase 4: Summarizer & Fact-Checker Agents** — Cross-reference sources and flag contradictions.
 - [x] **Phase 5: Authentication & User Isolation** — Cryptographic JWT Auth + MongoDB Atlas with dual-key (`user_id` + `session_id`) isolation.
 - [x] **Phase 6: Rate Limiting Layer** — Per-user quota management (10 queries/day, 3 RPM burst limit, brute-force lockout) to protect API budgets.
-- [ ] **Phase 7: Frontend & Deployment** — Responsive UI deployed on Hugging Face Spaces.
+- [x] **Phase 7: Frontend & Deployment** — Responsive React UI over a thin FastAPI/SSE layer, deployable to Hugging Face Spaces. Verified with a live two-account cross-user isolation test.
 
 ---
 

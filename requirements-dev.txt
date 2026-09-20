@@ -1,0 +1,7 @@
+# Development and test tooling only. Not installed in the deployed image.
+-r requirements.txt
+
+pytest==8.4.2
+iniconfig==2.3.0
+pluggy==1.6.0
+Pygments==2.21.0
