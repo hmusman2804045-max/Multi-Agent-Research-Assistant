@@ -1,0 +1,31 @@
+# Secrets - never bake these into an image. Configure them as Space secrets instead.
+.env
+.env.local
+.env.*.local
+.jwt_secret
+
+# Version control & local tooling
+.git
+.gitignore
+.venv
+venv
+.vscode
+.idea
+
+# Python caches
+__pycache__
+**/__pycache__
+*.py[cod]
+*.egg-info
+
+# Frontend: node_modules and any local build are rebuilt inside the image
+frontend/node_modules
+frontend/dist
+
+# Tests, scripts, logs and personal docs
+tests
+scripts
+logs
+*.log
+requirements-dev.txt
+Multi_Agent_Research_Assistant_PRD.html

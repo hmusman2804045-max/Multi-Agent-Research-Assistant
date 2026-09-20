@@ -31,10 +31,17 @@ class RateLimitExceededError(Exception):
 
 
 class DailyLimitExceededError(RateLimitExceededError):
-    """Raised when user exceeds their daily research query allocation."""
+    """Raised when a daily research query allocation is exhausted.
 
-    def __init__(self, message: str, retry_after_seconds: int = 0) -> None:
+    `scope` distinguishes the two structurally different daily caps:
+    - "personal": the per-user DAILY_QUERY_LIMIT allocation is spent.
+    - "global": the service-wide shared GLOBAL_DAILY_QUERY_LIMIT is spent for every user.
+    These mean different things to the caller, so they must not be conflated.
+    """
+
+    def __init__(self, message: str, retry_after_seconds: int = 0, scope: str = "personal") -> None:
         super().__init__(message, retry_after_seconds=retry_after_seconds, limit_type="daily")
+        self.scope = scope
 
 
 class BurstRateLimitExceededError(RateLimitExceededError):
@@ -116,6 +123,7 @@ class RateLimiter:
                         f"Service-wide shared research capacity reached ({settings.global_daily_query_limit} queries/day total). "
                         f"Shared quota resets at 00:00 UTC (in {hours}h {mins}m).",
                         retry_after_seconds=g_retry,
+                        scope="global",
                     )
 
             # 2. Evaluate & consume Per-User Quota & RPM atomically
@@ -156,6 +164,7 @@ class RateLimiter:
                         f"Daily research quota reached ({settings.daily_query_limit} queries/day). "
                         f"Quota resets at 00:00 UTC (in {hours}h {mins}m).",
                         retry_after_seconds=retry_after,
+                        scope="personal",
                     )
 
             daily_count = rec.get("daily_count", 1)
@@ -205,6 +214,42 @@ class RateLimiter:
             rpm_remaining=max(0, settings.requests_per_minute_limit - len(recent_timestamps)),
             seconds_to_daily_reset=self._seconds_until_midnight_utc(),
         )
+
+    def get_global_quota_status(self) -> Dict[str, Any]:
+        """Inspect the service-wide shared daily cap without consuming an allocation.
+
+        This is deliberately separate from `get_quota_status`: the global cap is a single
+        shared pool across every user, so exhausting it means the *service* is at capacity,
+        not that any individual user has spent their own allocation.
+
+        Returns:
+            Dict with keys: enabled, used, limit, remaining, exhausted, seconds_to_daily_reset.
+        """
+        limit = settings.global_daily_query_limit
+        seconds_to_reset = self._seconds_until_midnight_utc()
+
+        if limit <= 0:
+            return {
+                "enabled": False,
+                "used": 0,
+                "limit": 0,
+                "remaining": 0,
+                "exhausted": False,
+                "seconds_to_daily_reset": seconds_to_reset,
+            }
+
+        record = self.storage.get_rate_limit_record("__global_aggregate__")
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        used = int(record.get("daily_count", 0)) if record.get("daily_date") == today_str else 0
+
+        return {
+            "enabled": True,
+            "used": used,
+            "limit": limit,
+            "remaining": max(0, limit - used),
+            "exhausted": used >= limit,
+            "seconds_to_daily_reset": seconds_to_reset,
+        }
 
     def record_login_attempt(self, user_id: str, success: bool) -> None:
         """Track login attempts to protect against brute-force password guessing."""

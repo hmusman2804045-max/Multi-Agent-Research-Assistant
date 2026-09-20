@@ -416,7 +416,13 @@ def request_password_reset(
         )
         storage.save_reset_token(token_doc)
 
-        reset_link = f"python main.py --reset-password {raw_token}"
+        # Web deployments set PASSWORD_RESET_LINK_BASE_URL so the email carries a clickable
+        # reset URL; without it the original CLI-form instruction is preserved unchanged.
+        base_url = settings.password_reset_link_base_url.strip().rstrip("/")
+        if base_url:
+            reset_link = f"{base_url}/reset-password?token={raw_token}"
+        else:
+            reset_link = f"python main.py --reset-password {raw_token}"
         send_password_reset_email(to_email=user.email, reset_link=reset_link)
         logger.info(f"Initiated password reset for user '{user.user_id}'.")
     else:
