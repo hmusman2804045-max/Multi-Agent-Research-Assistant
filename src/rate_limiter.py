@@ -278,3 +278,58 @@ class RateLimiter:
         }
         self.storage.save_rate_limit_record(clean_user, record)
         logger.info(f"Reset rate limits and quotas for user '{clean_user}'.")
+
+    def check_password_reset_rate_limit(self, identifier: str) -> None:
+        """Enforce rate limits on password reset requests to prevent abuse.
+
+        Args:
+            identifier: The target username or email address.
+
+        Raises:
+            RateLimitExceededError: If the hourly reset request quota is exceeded.
+        """
+        clean_id = identifier.strip().lower() if identifier else "unknown"
+        rate_key = f"pwd_reset_{clean_id}"
+
+        now_dt = datetime.now(timezone.utc)
+        now_ts = now_dt.timestamp()
+
+        with _limiter_lock:
+            record = self.storage.get_rate_limit_record(rate_key)
+            raw_timestamps: List[float] = record.get("minute_timestamps", [])
+            # Sliding 3600-second (1 hour) window
+            recent_timestamps = [t for t in raw_timestamps if (now_ts - t) < 3600.0]
+
+            if len(recent_timestamps) >= settings.password_reset_limit_per_hour:
+                oldest = min(recent_timestamps)
+                retry_after = max(1, int(3600.0 - (now_ts - oldest)))
+                mins = max(1, retry_after // 60)
+                logger.warning(
+                    f"Password reset rate limit exceeded for identifier '{clean_id}'. "
+                    f"Used {len(recent_timestamps)}/{settings.password_reset_limit_per_hour} requests. "
+                    f"Retry after {retry_after}s."
+                )
+                raise RateLimitExceededError(
+                    f"Too many password reset requests ({settings.password_reset_limit_per_hour} requests/hour). "
+                    f"Please wait {mins} minute(s) before trying again.",
+                    retry_after_seconds=retry_after,
+                    limit_type="password_reset",
+                )
+
+            recent_timestamps.append(now_ts)
+            record["minute_timestamps"] = recent_timestamps
+            self.storage.save_rate_limit_record(rate_key, record)
+            logger.info(
+                f"Password reset request recorded for '{clean_id}' "
+                f"({len(recent_timestamps)}/{settings.password_reset_limit_per_hour} this hour)."
+            )
+
+    def clear_login_lockout(self, user_id: str) -> None:
+        """Clear login lockout and reset failed login attempts for a user."""
+        clean_user = user_id.strip() if user_id else "unknown"
+        with _limiter_lock:
+            record = self.storage.get_rate_limit_record(clean_user)
+            record["failed_login_attempts"] = 0
+            record["lockout_until"] = None
+            self.storage.save_rate_limit_record(clean_user, record)
+            logger.info(f"Cleared login lockout state for user '{clean_user}'.")

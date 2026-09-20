@@ -100,9 +100,10 @@ In **Phase 6**, the system introduces **per-user rate limiting & quota managemen
 
 ## 🏗️ Architecture & Core Components
 
-- **Rate Limiting & Quota Layer (`src/rate_limiter.py`)**: Intercepts requests before any agent execution, tracking sliding 60-second burst windows, daily query caps per user, and authentication lockouts.
-- **Authentication & JWT Layer (`src/auth.py`)**: Handles user registration with PBKDF2-HMAC-SHA256 password hashing (100,000 rounds, unique random salts), credential verification, constant-time comparisons, and signed JWT session token generation/verification with algorithm whitelisting.
-- **Per-User Isolated Storage (`src/storage.py`)**: MongoDB / MongoMock client enforcing strict dual-key query filtering `{"user_id": user_id, "session_id": session_id}` (PRD Lesson 5). Indexes compound unique `[("user_id", 1), ("session_id", 1)]`, secondary `[("user_id", 1), ("created_at", -1)]`, and `[("user_id", 1)]` for users and rate limits.
+- **Rate Limiting & Quota Layer (`src/rate_limiter.py`)**: Intercepts requests before any agent execution, tracking sliding 60-second burst windows, daily query caps per user, password reset request limits (3/hour), and authentication lockouts.
+- **Authentication & JWT Layer (`src/auth.py`)**: Handles user registration with PBKDF2-HMAC-SHA256 password hashing (100,000 rounds, unique random salts), credential verification, constant-time comparisons, single-use password reset token lifecycle, and signed JWT session token generation/verification with algorithm whitelisting.
+- **Email Delivery Subsystem (`src/email_service.py`)**: Resend REST API integration for delivering time-bounded, single-use password reset tokens with anti-enumeration protection and automatic fallback for hermetic testing.
+- **Per-User Isolated Storage (`src/storage.py`)**: MongoDB / MongoMock client enforcing strict dual-key query filtering `{"user_id": user_id, "session_id": session_id}` (PRD Lesson 5). Indexes compound unique `[("user_id", 1), ("session_id", 1)]`, secondary `[("user_id", 1), ("created_at", -1)]`, `[("token", 1)]` (unique reset tokens), and `[("user_id", 1)]` for users and rate limits.
 - **Security & Sanitization Module (`src/security.py`)**: Validates user queries, neutralizes XML/HTML structural injections via `html.escape(quote=True)`, and safely encloses untrusted web content in structural delimiters.
 - **Planner Agent (`src/agents/planner_agent.py`)**: Analyzes research questions and produces 2–4 targeted sub-queries via deterministic JSON mode with automatic fallback.
 - **Search Agent (`src/agents/search_agent.py`)**: Interacts with the **Tavily Search API** to execute multi-query searches and performs **score-based URL deduplication**.
@@ -163,9 +164,10 @@ Multi-Agent-Research-Assistant/
 │   └── research_assistant.log
 ├── src/
 │   ├── __init__.py
-│   ├── rate_limiter.py      # Rate limiting, daily quota tracking & login lockout layer
-│   ├── auth.py              # Cryptographic JWT authentication, PBKDF2 hashing & token management
-│   ├── storage.py           # MongoDB / MongoMock dual-key isolated session & rate limit storage
+│   ├── rate_limiter.py      # Rate limiting, daily quota tracking, reset limiting & login lockout layer
+│   ├── auth.py              # Cryptographic JWT authentication, PBKDF2 hashing & password reset logic
+│   ├── email_service.py     # Resend REST API transactional email delivery service
+│   ├── storage.py           # MongoDB / MongoMock dual-key isolated session, user & reset token storage
 │   ├── config.py            # Settings validation & hyperparameters
 │   ├── logger.py            # Centralized logging (live console streaming + file logging)
 │   ├── security.py          # Input sanitization & structural prompt injection defenses
@@ -183,7 +185,8 @@ Multi-Agent-Research-Assistant/
     ├── test_phase3.py       # Phase 3 security & sanitization tests
     ├── test_phase4.py       # Phase 4 summarization, fact-checking & 5-agent tests
     ├── test_phase5.py       # Phase 5 JWT authentication & dual-key storage isolation tests
-    └── test_phase6.py       # Phase 6 Rate limiting, quotas & brute-force lockout tests
+    ├── test_phase6.py       # Phase 6 Rate limiting, quotas & brute-force lockout tests
+    └── test_password_reset.py # Password reset flow, email dispatch, anti-enumeration & token tests
 ```
 
 ---
@@ -271,6 +274,16 @@ python main.py --register -u alice_researcher -p "MySecurePassword123!"
 **Authenticate & Obtain a Signed JWT Token:**
 ```bash
 python main.py --login -u alice_researcher -p "MySecurePassword123!"
+```
+
+**Request Password Reset Link (Anti-Enumeration Protected & Rate Limited):**
+```bash
+python main.py --forgot-password -u alice_researcher
+```
+
+**Confirm Password Reset with One-Time Token:**
+```bash
+python main.py --reset-password <RESET_TOKEN> -p "BrandNewSecurePassword123!"
 ```
 
 **Check Your Real-Time Rate Limit & Daily Quota Status:**

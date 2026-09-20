@@ -77,6 +77,25 @@ class UserAccountDocument(BaseModel):
         return _sanitize_key(v, "user_id")
 
 
+class PasswordResetToken(BaseModel):
+    """Schema for a time-limited single-use password reset token."""
+    token: str = Field(...)
+    user_id: str = Field(...)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    expires_at: datetime = Field(...)
+    used: bool = Field(default=False)
+
+    @field_validator("user_id")
+    @classmethod
+    def validate_user(cls, v: str) -> str:
+        return _sanitize_key(v, "user_id")
+
+    @field_validator("token")
+    @classmethod
+    def validate_token(cls, v: str) -> str:
+        return _sanitize_key(v, "token")
+
+
 class ResearchStorage:
     """Database client wrapper ensuring strict per-user dual-key isolation."""
 
@@ -114,6 +133,7 @@ class ResearchStorage:
         self.sessions_col: Collection = self.db["research_sessions"]
         self.users_col: Collection = self.db["users"]
         self.rate_limits_col: Collection = self.db["rate_limits"]
+        self.reset_tokens_col: Collection = self.db["password_reset_tokens"]
         self._ensure_indexes()
 
     def _ensure_indexes(self) -> None:
@@ -141,6 +161,17 @@ class ResearchStorage:
                 [("user_id", pymongo.ASCENDING)],
                 unique=True,
                 name="idx_rate_limits_user_id_unique",
+            )
+            # Unique index on token for password reset tokens collection
+            self.reset_tokens_col.create_index(
+                [("token", pymongo.ASCENDING)],
+                unique=True,
+                name="idx_reset_tokens_token_unique",
+            )
+            # Secondary index on user_id for reset tokens
+            self.reset_tokens_col.create_index(
+                [("user_id", pymongo.ASCENDING)],
+                name="idx_reset_tokens_user_id",
             )
             logger.debug("MongoDB indexes initialized successfully.")
         except Exception as e:
@@ -171,6 +202,78 @@ class ResearchStorage:
         """Check if a user account already exists."""
         clean_user = _sanitize_key(user_id, "user_id")
         return self.users_col.count_documents({"user_id": clean_user}) > 0
+
+    def find_user_by_email_or_id(self, identifier: str) -> Optional[UserAccountDocument]:
+        """Find a user account matching either username/user_id or registered email.
+
+        Args:
+            identifier: The username (user_id) or email address.
+
+        Returns:
+            UserAccountDocument if found, None otherwise.
+        """
+        clean_id = _sanitize_key(identifier, "identifier")
+        # Direct lookup by user_id
+        doc = self.users_col.find_one({"user_id": clean_id})
+        if not doc:
+            # Fallback lookup by email
+            doc = self.users_col.find_one({"email": clean_id})
+        if not doc:
+            return None
+        doc.pop("_id", None)
+        return UserAccountDocument(**doc)
+
+    def save_reset_token(self, token_doc: PasswordResetToken) -> str:
+        """Persist a newly generated password reset token.
+
+        Args:
+            token_doc: The PasswordResetToken to store.
+
+        Returns:
+            The stored token string.
+        """
+        clean_token = _sanitize_key(token_doc.token, "token")
+        clean_user = _sanitize_key(token_doc.user_id, "user_id")
+        doc = token_doc.model_dump()
+        self.reset_tokens_col.update_one(
+            {"token": clean_token},
+            {"$set": doc},
+            upsert=True,
+        )
+        logger.info(f"Saved password reset token for user '{clean_user}'.")
+        return clean_token
+
+    def get_reset_token(self, token: str) -> Optional[PasswordResetToken]:
+        """Retrieve a password reset token document by token string.
+
+        Args:
+            token: The reset token string.
+
+        Returns:
+            PasswordResetToken if found, None otherwise.
+        """
+        clean_token = _sanitize_key(token, "token")
+        doc = self.reset_tokens_col.find_one({"token": clean_token})
+        if not doc:
+            return None
+        doc.pop("_id", None)
+        return PasswordResetToken(**doc)
+
+    def mark_reset_token_used(self, token: str) -> bool:
+        """Mark a password reset token as used.
+
+        Args:
+            token: The reset token string.
+
+        Returns:
+            True if marked used successfully, False otherwise.
+        """
+        clean_token = _sanitize_key(token, "token")
+        res = self.reset_tokens_col.update_one(
+            {"token": clean_token},
+            {"$set": {"used": True, "updated_at": datetime.now(timezone.utc)}},
+        )
+        return res.modified_count > 0 or res.matched_count > 0
 
     def get_rate_limit_record(self, user_id: str) -> Dict[str, Any]:
         """Retrieve or initialize rate limit document for a user."""

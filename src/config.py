@@ -82,6 +82,11 @@ class Settings(BaseModel):
     requests_per_minute_limit: int = Field(default_factory=lambda: int(os.getenv("REQUESTS_PER_MINUTE_LIMIT", "3")))
     auth_max_failed_attempts: int = Field(default_factory=lambda: int(os.getenv("AUTH_MAX_FAILED_ATTEMPTS", "5")))
     auth_lockout_minutes: int = Field(default_factory=lambda: int(os.getenv("AUTH_LOCKOUT_MINUTES", "15")))
+    # Password Reset & Email Configuration
+    resend_api_key: str = Field(default_factory=lambda: os.getenv("RESEND_API_KEY", ""))
+    resend_from_email: str = Field(default_factory=lambda: os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev"))
+    password_reset_token_expire_minutes: int = Field(default_factory=lambda: int(os.getenv("PASSWORD_RESET_TOKEN_EXPIRE_MINUTES", "15")))
+    password_reset_limit_per_hour: int = Field(default_factory=lambda: int(os.getenv("PASSWORD_RESET_LIMIT_PER_HOUR", "3")))
 
     def validate_keys(self) -> None:
         """Ensure required API keys and security credentials are valid."""
@@ -107,6 +112,14 @@ class Settings(BaseModel):
             raise ValueError(
                 f"Missing or placeholder API keys found for: {', '.join(missing)}.\n"
                 f"Please update your .env file located at: {BASE_DIR / '.env'}"
+            )
+
+    def validate_resend_key(self) -> None:
+        """Ensure Resend API key is configured when sending emails."""
+        if not self.resend_api_key or self.resend_api_key == "your_resend_api_key_here":
+            raise ValueError(
+                "RESEND_API_KEY is not configured or is a placeholder.\n"
+                f"Please set a valid RESEND_API_KEY in your .env file: {BASE_DIR / '.env'}"
             )
 
 
