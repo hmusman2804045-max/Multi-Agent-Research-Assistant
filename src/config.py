@@ -87,6 +87,7 @@ class Settings(BaseModel):
     resend_from_email: str = Field(default_factory=lambda: os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev"))
     password_reset_token_expire_minutes: int = Field(default_factory=lambda: int(os.getenv("PASSWORD_RESET_TOKEN_EXPIRE_MINUTES", "15")))
     password_reset_limit_per_hour: int = Field(default_factory=lambda: int(os.getenv("PASSWORD_RESET_LIMIT_PER_HOUR", "3")))
+    password_reset_timing_floor_seconds: float = Field(default_factory=lambda: float(os.getenv("PASSWORD_RESET_TIMING_FLOOR_SECONDS", "0.35")))
 
     def validate_keys(self) -> None:
         """Ensure required API keys and security credentials are valid."""

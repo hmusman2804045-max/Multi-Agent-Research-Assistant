@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import secrets
+import time
 from typing import Any, Dict, Optional, Tuple
 import jwt
 from pydantic import BaseModel, Field, field_validator
@@ -389,6 +390,7 @@ def request_password_reset(
     if not user_id_or_email or not user_id_or_email.strip():
         raise ValueError("Username or email address cannot be empty.")
 
+    start_time = time.monotonic()
     clean_id = user_id_or_email.strip()
 
     # 1. Look up user account first (supports username or email)
@@ -418,14 +420,21 @@ def request_password_reset(
         send_password_reset_email(to_email=user.email, reset_link=reset_link)
         logger.info(f"Initiated password reset for user '{user.user_id}'.")
     else:
-        # Mitigate timing side-channels with simulated dummy cryptographic operations
+        # Dummy token creation for state consistency
         _ = secrets.token_urlsafe(32)
-        _ = hashlib.pbkdf2_hmac(HASH_NAME, b"dummy_constant_timing_padding", b"dummy_salt_bytes", 10_000)
         logger.info(
             f"Password reset requested for non-existent or email-less identifier. Skipped delivery."
         )
 
-    # 4. Anti-enumeration guaranteed uniform message
+    # 4. Anti-enumeration timing equalization floor (closes network vs local timing side-channel)
+    if settings.password_reset_timing_floor_seconds > 0:
+        elapsed = time.monotonic() - start_time
+        # Add random 0-40ms jitter to prevent micro-architectural timing analysis
+        target_floor = settings.password_reset_timing_floor_seconds + (secrets.randbelow(40) / 1000.0)
+        if elapsed < target_floor:
+            time.sleep(target_floor - elapsed)
+
+    # 5. Anti-enumeration guaranteed uniform message
     return "If an account with that identifier exists, a password reset email has been sent."
 
 
