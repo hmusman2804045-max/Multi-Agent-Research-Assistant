@@ -19,6 +19,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from src.config import settings
 from src.logger import get_logger
+from src.email_service import send_password_reset_email
+from src.storage import PasswordResetToken
+from src.rate_limiter import RateLimiter
 
 logger = get_logger(__name__)
 
@@ -353,3 +356,134 @@ def verify_access_token(
         issued_at=iat_dt,
         expires_at=exp_dt,
     )
+
+
+def request_password_reset(
+    storage: Any,
+    user_id_or_email: str,
+    rate_limiter: Optional[Any] = None,
+) -> str:
+    """Request a password reset link for a user account by username or email.
+
+    Enforces rate limits to prevent email spamming and guarantees anti-enumeration
+    by always returning an identical generic message.
+
+    Args:
+        storage: ResearchStorage instance.
+        user_id_or_email: Target user_id or registered email.
+        rate_limiter: Optional RateLimiter instance.
+
+    Returns:
+        Generic confirmation message (anti-enumeration defense).
+
+    Raises:
+        ValueError: If user_id_or_email is empty.
+        RateLimitExceededError: If the rate limit for this identifier is exceeded.
+    """
+    if not user_id_or_email or not user_id_or_email.strip():
+        raise ValueError("Username or email address cannot be empty.")
+
+    clean_id = user_id_or_email.strip()
+
+    # 1. Enforce rate limiting on the identifier
+    limiter = rate_limiter or RateLimiter(storage=storage)
+    limiter.check_password_reset_rate_limit(clean_id)
+
+    # 2. Look up user account
+    user = storage.find_user_by_email_or_id(clean_id)
+
+    # 3. If account exists and has email, create token and dispatch email
+    if user and user.email:
+        raw_token = secrets.token_urlsafe(32)
+        now_dt = datetime.now(timezone.utc)
+        expires_at = now_dt + timedelta(minutes=settings.password_reset_token_expire_minutes)
+
+        token_doc = PasswordResetToken(
+            token=raw_token,
+            user_id=user.user_id,
+            created_at=now_dt,
+            expires_at=expires_at,
+            used=False,
+        )
+        storage.save_reset_token(token_doc)
+
+        reset_link = f"python main.py --reset-password {raw_token}"
+        send_password_reset_email(to_email=user.email, reset_link=reset_link)
+        logger.info(f"Initiated password reset for user '{user.user_id}'.")
+    else:
+        logger.info(
+            f"Password reset requested for non-existent or email-less identifier '{clean_id}'. Skipped delivery."
+        )
+
+    # 4. Anti-enumeration guaranteed message
+    return "If an account with that identifier exists, a password reset email has been sent."
+
+
+def confirm_password_reset(
+    storage: Any,
+    token: str,
+    new_password: str,
+    rate_limiter: Optional[Any] = None,
+) -> bool:
+    """Confirm a password reset using a valid single-use reset token.
+
+    Validates token expiration, hashes the new password with PBKDF2-HMAC-SHA256,
+    marks the token used, and clears any active login lockout.
+
+    Args:
+        storage: ResearchStorage instance.
+        token: Single-use reset token.
+        new_password: New plain-text password.
+        rate_limiter: Optional RateLimiter instance.
+
+    Returns:
+        True if password reset succeeded.
+
+    Raises:
+        InvalidTokenError: If token is invalid, missing, or already used.
+        TokenExpiredError: If token expiration timestamp has elapsed.
+        WeakPasswordError: If new password does not meet minimum policy requirements.
+        UserNotFoundError: If associated user account cannot be found.
+    """
+    if not token or not token.strip():
+        raise InvalidTokenError("Reset token must be a non-empty string.")
+
+    clean_token = token.strip()
+    token_doc = storage.get_reset_token(clean_token)
+
+    if not token_doc:
+        raise InvalidTokenError("Invalid or non-existent password reset token.")
+
+    if token_doc.used:
+        raise InvalidTokenError("This password reset token has already been used.")
+
+    now_dt = datetime.now(timezone.utc)
+    token_exp = token_doc.expires_at
+    if token_exp.tzinfo is None:
+        token_exp = token_exp.replace(tzinfo=timezone.utc)
+
+    if now_dt >= token_exp:
+        raise TokenExpiredError("Password reset token has expired (15-minute window elapsed).")
+
+    # Fetch user account
+    user = storage.get_user(token_doc.user_id)
+    if not user:
+        raise UserNotFoundError(f"User account '{token_doc.user_id}' associated with token was not found.")
+
+    # Validate and hash new password using existing PBKDF2 logic
+    salt_hex, hash_hex = hash_password(new_password)
+
+    # Update user account
+    user.salt = salt_hex
+    user.password_hash = hash_hex
+    storage.save_user(user)
+
+    # Invalidate token
+    storage.mark_reset_token_used(clean_token)
+
+    # Reset any brute-force login lockout state for this user
+    limiter = rate_limiter or RateLimiter(storage=storage)
+    limiter.clear_login_lockout(user.user_id)
+
+    logger.info(f"Password reset completed successfully for user '{user.user_id}'.")
+    return True

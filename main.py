@@ -20,6 +20,8 @@ from src.auth import (
     register_user,
     authenticate_user,
     verify_access_token,
+    request_password_reset,
+    confirm_password_reset,
     AuthError,
     UserIdentity,
 )
@@ -89,6 +91,42 @@ def handle_login(storage: ResearchStorage, user_arg: Optional[str], password_arg
     except AuthError as e:
         print(Fore.RED + Style.BRIGHT + f"\n❌ Authentication Failed: {e}\n")
         return None
+
+
+def handle_forgot_password(storage: ResearchStorage, identifier_arg: Optional[str]):
+    """Handle password reset request (anti-enumeration protected)."""
+    identifier = identifier_arg or input(Fore.YELLOW + "Enter registered username or email: " + Fore.WHITE).strip()
+    if not identifier:
+        print(Fore.RED + "❌ Username or email cannot be empty.")
+        return
+
+    try:
+        msg = request_password_reset(storage, user_id_or_email=identifier)
+        print(Fore.GREEN + Style.BRIGHT + f"\n📧 {msg}\n")
+    except RateLimitExceededError as e:
+        print(Fore.RED + Style.BRIGHT + f"\n⏱️ Rate Limit Exceeded: {e}\n")
+    except Exception as e:
+        print(Fore.RED + Style.BRIGHT + f"\n❌ Request Failed: {e}\n")
+
+
+def handle_reset_password(storage: ResearchStorage, token: str, new_password_arg: Optional[str] = None):
+    """Handle password confirmation with single-use reset token."""
+    if not token or not token.strip():
+        print(Fore.RED + "❌ Reset token cannot be empty.")
+        return
+
+    new_password = new_password_arg or getpass.getpass(Fore.YELLOW + "Enter new password (min 8 chars): " + Fore.WHITE)
+    if not new_password:
+        print(Fore.RED + "❌ Password cannot be empty.")
+        return
+
+    try:
+        confirm_password_reset(storage, token=token.strip(), new_password=new_password)
+        print(Fore.GREEN + Style.BRIGHT + "\n✅ Password reset successfully! You can now log in with your new password.\n")
+    except AuthError as e:
+        print(Fore.RED + Style.BRIGHT + f"\n❌ Password Reset Failed: {e}\n")
+    except Exception as e:
+        print(Fore.RED + Style.BRIGHT + f"\n❌ Error: {e}\n")
 
 
 def handle_session_history(storage: ResearchStorage, user_id: str):
@@ -266,6 +304,8 @@ def main():
     parser.add_argument("--register", action="store_true", help="Register a new user account")
     parser.add_argument("--login", action="store_true", help="Authenticate with credentials and obtain a JWT token")
     parser.add_argument("--token", type=str, default=None, help="Signed JWT access token for authentication")
+    parser.add_argument("--forgot-password", action="store_true", help="Request a password reset link (anti-enumeration protected)")
+    parser.add_argument("--reset-password", type=str, metavar="TOKEN", help="Confirm password reset using a valid single-use reset token")
     parser.add_argument("--quota", action="store_true", help="View current rate limit and daily quota usage")
     parser.add_argument("--history", action="store_true", help="List past research session history (Authentication Required)")
     parser.add_argument("--load-session", type=str, metavar="SESSION_ID", help="Load and view a past session report (Authentication Required)")
@@ -283,6 +323,16 @@ def main():
     # Flow 1: Register
     if args.register:
         handle_register(storage, user_arg=args.user, password_arg=args.password, email_arg=args.email)
+        return
+
+    # Flow: Password Reset Request
+    if args.forgot_password:
+        handle_forgot_password(storage, identifier_arg=args.user or args.email)
+        return
+
+    # Flow: Password Reset Confirmation
+    if args.reset_password:
+        handle_reset_password(storage, token=args.reset_password, new_password_arg=args.password)
         return
 
     # Flow 2: Authenticate Identity
