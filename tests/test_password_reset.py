@@ -183,6 +183,28 @@ class TestUserEnumerationPrevention(unittest.TestCase):
         self.assertEqual(res_real, res_fake)
         self.assertEqual(res_real, "If an account with that identifier exists, a password reset email has been sent.")
 
+    @patch("src.auth.send_password_reset_email")
+    def test_timing_side_channel_mitigation(self, mock_send_email):
+        def simulated_network_send(*args, **kwargs):
+            import time
+            time.sleep(0.04)
+            return True
+        mock_send_email.side_effect = simulated_network_send
+
+        with patch.object(settings, "password_reset_timing_floor_seconds", 0.08):
+            import time
+            t0 = time.monotonic()
+            request_password_reset(self.storage, "real_user", rate_limiter=self.limiter)
+            duration_real = time.monotonic() - t0
+
+            t0 = time.monotonic()
+            request_password_reset(self.storage, "ghost_user", rate_limiter=self.limiter)
+            duration_ghost = time.monotonic() - t0
+
+            self.assertGreaterEqual(duration_real, 0.075)
+            self.assertGreaterEqual(duration_ghost, 0.075)
+            self.assertLess(abs(duration_real - duration_ghost), 0.06)
+
 
 class TestPasswordResetRateLimiting(unittest.TestCase):
     """Test rate limiting on password reset requests (e.g. 3 requests/hour)."""
