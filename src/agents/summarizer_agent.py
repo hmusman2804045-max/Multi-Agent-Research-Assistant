@@ -123,6 +123,7 @@ class SummarizerAgent:
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                response_format={"type": "json_object"},
             )
 
             msg = chat_completion.choices[0].message

@@ -11,12 +11,17 @@ from src.agents.fact_checker_agent import FactCheckerAgent, FactCheckOutput
 from src.agents.writer_agent import WriterAgent
 from src.security import sanitize_user_input
 
+import uuid
+from src.storage import ResearchStorage, ResearchSessionDocument
+
 logger = logging.getLogger(__name__)
 
 
 class ResearchResult(BaseModel):
     """Container for the output of a 5-agent research pipeline execution."""
     query: str
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
     sub_queries: List[str] = Field(default_factory=list)
     plan_rationale: str = ""
     report: str
@@ -42,7 +47,8 @@ class ResearchPipeline:
         search_agent: Optional[SearchAgent] = None,
         summarizer_agent: Optional[SummarizerAgent] = None,
         fact_checker_agent: Optional[FactCheckerAgent] = None,
-        writer_agent: Optional[WriterAgent] = None
+        writer_agent: Optional[WriterAgent] = None,
+        storage: Optional[ResearchStorage] = None,
     ):
         settings.validate_keys()
         self.planner_agent = planner_agent or PlannerAgent()
@@ -50,10 +56,13 @@ class ResearchPipeline:
         self.summarizer_agent = summarizer_agent or SummarizerAgent()
         self.fact_checker_agent = fact_checker_agent or FactCheckerAgent()
         self.writer_agent = writer_agent or WriterAgent()
+        self.storage = storage or ResearchStorage()
 
     def run(
         self,
         query: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
         max_sub_queries: Optional[int] = None,
         max_results_per_subquery: Optional[int] = None
     ) -> ResearchResult:
@@ -133,9 +142,34 @@ class ResearchPipeline:
         }
 
         is_any_fallback = plan_output.is_fallback or summary_output.is_fallback or fact_check_output.is_fallback
+        effective_session_id = session_id or str(uuid.uuid4())
+
+        # Persist to database if user_id is provided
+        if user_id:
+            try:
+                session_doc = ResearchSessionDocument(
+                    session_id=effective_session_id,
+                    user_id=user_id,
+                    query=query,
+                    plan=plan_output.sub_queries,
+                    sources=search_results,
+                    summaries=[s.model_dump() for s in summary_output.sources] if summary_output else [],
+                    fact_check=fact_check_output.model_dump() if fact_check_output else None,
+                    report=report,
+                    metadata={
+                        "is_fallback": is_any_fallback,
+                        "execution_time_seconds": round(total_time, 2),
+                        "token_usage": total_usage,
+                    }
+                )
+                self.storage.save_session(session_doc)
+            except Exception as e:
+                logger.error(f"Failed to persist research session for user '{user_id}': {e}")
 
         return ResearchResult(
             query=query,
+            user_id=user_id,
+            session_id=effective_session_id if user_id else None,
             sub_queries=plan_output.sub_queries,
             plan_rationale=plan_output.rationale,
             report=report,

@@ -50,3 +50,9 @@ def setup_logging(level: int = logging.INFO, log_to_file: bool = True, log_to_co
         handlers=handlers,
         force=True
     )
+
+
+def get_logger(name: str = __name__) -> logging.Logger:
+    """Return a configured logger instance for the given module name."""
+    return logging.getLogger(name)
+

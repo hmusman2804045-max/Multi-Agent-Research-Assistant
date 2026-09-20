@@ -29,8 +29,16 @@ class Settings(BaseModel):
     summarizer_max_tokens: int = Field(default_factory=lambda: int(os.getenv("SUMMARIZER_MAX_TOKENS", "2048")))
     fact_checker_temperature: float = Field(default_factory=lambda: float(os.getenv("FACT_CHECKER_TEMPERATURE", "0.1")))
     fact_checker_max_tokens: int = Field(default_factory=lambda: int(os.getenv("FACT_CHECKER_MAX_TOKENS", "2048")))
+    # Security & Content Limits (Phase 3)
     max_query_length: int = Field(default_factory=lambda: int(os.getenv("MAX_QUERY_LENGTH", "500")))
     max_content_chars_per_source: int = Field(default_factory=lambda: int(os.getenv("MAX_CONTENT_CHARS_PER_SOURCE", "1500")))
+
+    # Database & Authentication (Phase 5)
+    mongodb_uri: str = Field(default_factory=lambda: os.getenv("MONGODB_URI", ""))
+    mongodb_db_name: str = Field(default_factory=lambda: os.getenv("MONGODB_DB_NAME", "research_assistant"))
+    jwt_secret_key: str = Field(default_factory=lambda: os.getenv("JWT_SECRET_KEY", "dev-insecure-secret-key-replace-in-production-32-chars!"))
+    jwt_algorithm: str = Field(default_factory=lambda: os.getenv("JWT_ALGORITHM", "HS256"))
+    auth_token_expire_minutes: int = Field(default_factory=lambda: int(os.getenv("AUTH_TOKEN_EXPIRE_MINUTES", "1440")))
 
     def validate_keys(self) -> None:
         """Ensure required API keys are populated."""
