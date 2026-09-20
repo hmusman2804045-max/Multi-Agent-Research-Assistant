@@ -167,12 +167,18 @@ def register_user(
     if storage.user_exists(clean_user):
         raise UserAlreadyExistsError(f"User '{clean_user}' already exists.")
 
+    clean_email = email.strip().lower() if email else None
+    if clean_email:
+        existing_email_user = storage.find_user_by_email(clean_email)
+        if existing_email_user:
+            raise UserAlreadyExistsError(f"An account with email '{clean_email}' already exists.")
+
     salt_hex, hash_hex = hash_password(password)
 
     from src.storage import UserAccountDocument
     user_doc = UserAccountDocument(
         user_id=clean_user,
-        email=email.strip() if email else None,
+        email=clean_email,
         password_hash=hash_hex,
         salt=salt_hex,
         created_at=datetime.now(timezone.utc),
@@ -385,12 +391,13 @@ def request_password_reset(
 
     clean_id = user_id_or_email.strip()
 
-    # 1. Enforce rate limiting on the identifier
-    limiter = rate_limiter or RateLimiter(storage=storage)
-    limiter.check_password_reset_rate_limit(clean_id)
-
-    # 2. Look up user account
+    # 1. Look up user account first (supports username or email)
     user = storage.find_user_by_email_or_id(clean_id)
+
+    # 2. Enforce unified rate limit (keyed to resolved user_id if account exists)
+    limiter = rate_limiter or RateLimiter(storage=storage)
+    rate_identifier = f"user_{user.user_id}" if user else f"query_{clean_id.lower()}"
+    limiter.check_password_reset_rate_limit(rate_identifier)
 
     # 3. If account exists and has email, create token and dispatch email
     if user and user.email:
@@ -411,11 +418,14 @@ def request_password_reset(
         send_password_reset_email(to_email=user.email, reset_link=reset_link)
         logger.info(f"Initiated password reset for user '{user.user_id}'.")
     else:
+        # Mitigate timing side-channels with simulated dummy cryptographic operations
+        _ = secrets.token_urlsafe(32)
+        _ = hashlib.pbkdf2_hmac(HASH_NAME, b"dummy_constant_timing_padding", b"dummy_salt_bytes", 10_000)
         logger.info(
-            f"Password reset requested for non-existent or email-less identifier '{clean_id}'. Skipped delivery."
+            f"Password reset requested for non-existent or email-less identifier. Skipped delivery."
         )
 
-    # 4. Anti-enumeration guaranteed message
+    # 4. Anti-enumeration guaranteed uniform message
     return "If an account with that identifier exists, a password reset email has been sent."
 
 

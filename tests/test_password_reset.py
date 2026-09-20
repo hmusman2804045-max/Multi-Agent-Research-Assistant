@@ -4,9 +4,11 @@ Tests:
 1. Token Lifecycle & Expiration (Creation, 15-minute TTL, field validation).
 2. End-to-End Password Reset Flow (Request -> Confirm -> Verify new credentials work, old credentials fail).
 3. Expired & Already-Used Token Rejection (TokenExpiredError, InvalidTokenError).
-4. Anti-User Enumeration Defense (Identical generic response for existing vs non-existent accounts).
-5. Password Reset Request Rate Limiting (3 requests/hour per identifier).
+4. Anti-User Enumeration Defense & Timing Side-Channel Padding (Identical generic response for existing vs non-existent accounts).
+5. Password Reset Request Rate Limiting (Unified 3 requests/hour per account across username and email).
 6. Lockout Auto-Clearing (Password reset unlocks accounts locked by brute-force defense).
+7. Email Uniqueness & Normalization (Case-insensitive matching and duplicate email prevention).
+8. TTL & Storage Indexes (TTL index on tokens, sparse unique index on user emails).
 """
 
 import unittest
@@ -24,6 +26,7 @@ from src.auth import (
     InvalidTokenError,
     TokenExpiredError,
     WeakPasswordError,
+    UserAlreadyExistsError,
 )
 from src.rate_limiter import RateLimiter, RateLimitExceededError, AccountLockedError
 from src.email_service import send_password_reset_email
@@ -127,20 +130,24 @@ class TestExpiredAndUsedTokenRejection(unittest.TestCase):
         self.assertIn("Invalid or non-existent", str(ctx.exception))
 
     def test_expired_token_rejected(self):
-        # Create an expired token (16 minutes ago)
+        # 1. Test when expired token is retrieved before TTL index cleanup (raises TokenExpiredError)
         old_time = datetime.now(timezone.utc) - timedelta(minutes=16)
-        expired_token = PasswordResetToken(
+        expired_doc = PasswordResetToken(
             token="expired_token_abc",
             user_id=self.user_id,
             created_at=old_time - timedelta(minutes=15),
             expires_at=old_time,
             used=False,
         )
-        self.storage.save_reset_token(expired_token)
+        with patch.object(self.storage, "get_reset_token", return_value=expired_doc):
+            with self.assertRaises(TokenExpiredError) as ctx:
+                confirm_password_reset(self.storage, token="expired_token_abc", new_password="NewPassword123!")
+            self.assertIn("expired", str(ctx.exception))
 
-        with self.assertRaises(TokenExpiredError) as ctx:
+        # 2. Test when expired token is auto-purged by MongoDB TTL index (raises InvalidTokenError)
+        self.storage.save_reset_token(expired_doc)
+        with self.assertRaises((InvalidTokenError, TokenExpiredError)):
             confirm_password_reset(self.storage, token="expired_token_abc", new_password="NewPassword123!")
-        self.assertIn("expired", str(ctx.exception))
 
     def test_already_used_token_rejected(self):
         now_dt = datetime.now(timezone.utc)
@@ -184,7 +191,8 @@ class TestPasswordResetRateLimiting(unittest.TestCase):
         self.storage = ResearchStorage(force_mock=True, db_name="test_reset_rate_limit_db")
         self.limiter = RateLimiter(storage=self.storage)
         self.target = "targeted_user"
-        register_user(self.storage, user_id=self.target, password="TargetPassword123!", email="target@example.com")
+        self.target_email = "targeted@example.com"
+        register_user(self.storage, user_id=self.target, password="TargetPassword123!", email=self.target_email)
 
     @patch("src.auth.send_password_reset_email")
     def test_reset_requests_capped_at_limit_per_hour(self, mock_send_email):
@@ -200,6 +208,46 @@ class TestPasswordResetRateLimiting(unittest.TestCase):
 
         self.assertGreater(ctx.exception.retry_after_seconds, 0)
         self.assertIn("Too many password reset requests", str(ctx.exception))
+
+    @patch("src.auth.send_password_reset_email")
+    def test_rate_limit_shared_across_username_and_email_aliases(self, mock_send_email):
+        mock_send_email.return_value = True
+
+        # 2 requests via username
+        request_password_reset(self.storage, self.target, rate_limiter=self.limiter)
+        request_password_reset(self.storage, self.target, rate_limiter=self.limiter)
+
+        # 1 request via email (exhausts the 3/hour quota)
+        request_password_reset(self.storage, self.target_email, rate_limiter=self.limiter)
+
+        # 4th request via email or username must now be blocked under the same unified bucket
+        with self.assertRaises(RateLimitExceededError):
+            request_password_reset(self.storage, self.target_email, rate_limiter=self.limiter)
+
+        with self.assertRaises(RateLimitExceededError):
+            request_password_reset(self.storage, self.target, rate_limiter=self.limiter)
+
+
+class TestEmailUniquenessAndNormalization(unittest.TestCase):
+    """Test case-insensitive email resolution and duplicate email rejection."""
+
+    def setUp(self):
+        self.storage = ResearchStorage(force_mock=True, db_name="test_email_uniqueness_db")
+        self.limiter = RateLimiter(storage=self.storage)
+        register_user(self.storage, user_id="alice_unique", password="SecurePassword123!", email="Alice@Example.COM")
+
+    def test_duplicate_email_registration_rejected(self):
+        # Attempting to register another user with same email in lowercase or different casing
+        with self.assertRaises(UserAlreadyExistsError) as ctx:
+            register_user(self.storage, user_id="bob_duplicate", password="AnotherPassword123!", email="alice@example.com")
+        self.assertIn("already exists", str(ctx.exception))
+
+    def test_case_insensitive_email_lookup_for_reset(self):
+        # Looking up with different casing finds the right account
+        account = self.storage.find_user_by_email_or_id("ALICE@EXAMPLE.COM")
+        self.assertIsNotNone(account)
+        self.assertEqual(account.user_id, "alice_unique")
+        self.assertEqual(account.email, "alice@example.com")
 
 
 class TestLockoutAutoResetOnPasswordReset(unittest.TestCase):

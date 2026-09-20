@@ -76,6 +76,14 @@ class UserAccountDocument(BaseModel):
     def validate_user(cls, v: str) -> str:
         return _sanitize_key(v, "user_id")
 
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            clean = v.strip().lower()
+            return clean if clean else None
+        return None
+
 
 class PasswordResetToken(BaseModel):
     """Schema for a time-limited single-use password reset token."""
@@ -162,6 +170,13 @@ class ResearchStorage:
                 unique=True,
                 name="idx_rate_limits_user_id_unique",
             )
+            # Sparse unique index on email for users collection (prevents duplicate registered emails)
+            self.users_col.create_index(
+                [("email", pymongo.ASCENDING)],
+                unique=True,
+                sparse=True,
+                name="idx_users_email_unique",
+            )
             # Unique index on token for password reset tokens collection
             self.reset_tokens_col.create_index(
                 [("token", pymongo.ASCENDING)],
@@ -172,6 +187,12 @@ class ResearchStorage:
             self.reset_tokens_col.create_index(
                 [("user_id", pymongo.ASCENDING)],
                 name="idx_reset_tokens_user_id",
+            )
+            # TTL index on expires_at for reset tokens collection (MongoDB auto-deletes expired tokens)
+            self.reset_tokens_col.create_index(
+                [("expires_at", pymongo.ASCENDING)],
+                expireAfterSeconds=0,
+                name="idx_reset_tokens_ttl",
             )
             logger.debug("MongoDB indexes initialized successfully.")
         except Exception as e:
@@ -203,8 +224,19 @@ class ResearchStorage:
         clean_user = _sanitize_key(user_id, "user_id")
         return self.users_col.count_documents({"user_id": clean_user}) > 0
 
+    def find_user_by_email(self, email: str) -> Optional[UserAccountDocument]:
+        """Find a user account by normalized lowercase email address."""
+        if not email or not email.strip():
+            return None
+        clean_email = email.strip().lower()
+        doc = self.users_col.find_one({"email": clean_email})
+        if not doc:
+            return None
+        doc.pop("_id", None)
+        return UserAccountDocument(**doc)
+
     def find_user_by_email_or_id(self, identifier: str) -> Optional[UserAccountDocument]:
-        """Find a user account matching either username/user_id or registered email.
+        """Find a user account matching either username/user_id or case-insensitive registered email.
 
         Args:
             identifier: The username (user_id) or email address.
@@ -212,12 +244,14 @@ class ResearchStorage:
         Returns:
             UserAccountDocument if found, None otherwise.
         """
-        clean_id = _sanitize_key(identifier, "identifier")
+        if not identifier or not identifier.strip():
+            return None
+        clean_id = _sanitize_key(identifier.strip(), "identifier")
         # Direct lookup by user_id
         doc = self.users_col.find_one({"user_id": clean_id})
         if not doc:
-            # Fallback lookup by email
-            doc = self.users_col.find_one({"email": clean_id})
+            # Fallback lookup by normalized email
+            doc = self.users_col.find_one({"email": clean_id.lower()})
         if not doc:
             return None
         doc.pop("_id", None)
