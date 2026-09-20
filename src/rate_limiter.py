@@ -113,7 +113,25 @@ class RateLimiter:
                 retry_after_seconds=retry_after,
             )
 
-        # 2. Check Daily Query Cap
+        # 2. Check Global Aggregate Cap (protects shared monthly Tavily budget across all users)
+        if settings.global_daily_query_limit > 0 and clean_user != "__global_aggregate__":
+            global_rec = self.storage.get_rate_limit_record("__global_aggregate__")
+            g_stored_date = global_rec.get("daily_date", "")
+            g_daily_count = int(global_rec.get("daily_count", 0)) if g_stored_date == today_str else 0
+            if g_daily_count >= settings.global_daily_query_limit:
+                secs_to_reset = self._seconds_until_midnight_utc()
+                hours = secs_to_reset // 3600
+                mins = (secs_to_reset % 3600) // 60
+                logger.warning(
+                    f"Global shared search quota exceeded across all users ({g_daily_count}/{settings.global_daily_query_limit})."
+                )
+                raise DailyLimitExceededError(
+                    f"Service-wide shared research capacity reached ({settings.global_daily_query_limit} queries/day total). "
+                    f"Shared quota resets at 00:00 UTC (in {hours}h {mins}m).",
+                    retry_after_seconds=secs_to_reset,
+                )
+
+        # 3. Check Per-User Daily Query Cap
         stored_date = record.get("daily_date", "")
         if stored_date == today_str:
             daily_count = int(record.get("daily_count", 0))
@@ -134,7 +152,7 @@ class RateLimiter:
                 retry_after_seconds=secs_to_reset,
             )
 
-        # 3. Consume Quota
+        # 4. Consume Quota
         daily_count += 1
         recent_timestamps.append(now_ts)
 
@@ -143,6 +161,15 @@ class RateLimiter:
         record["minute_timestamps"] = recent_timestamps
 
         self.storage.save_rate_limit_record(clean_user, record)
+
+        if settings.global_daily_query_limit > 0 and clean_user != "__global_aggregate__":
+            global_rec = self.storage.get_rate_limit_record("__global_aggregate__")
+            g_stored_date = global_rec.get("daily_date", "")
+            g_daily_count = int(global_rec.get("daily_count", 0)) if g_stored_date == today_str else 0
+            global_rec["daily_date"] = today_str
+            global_rec["daily_count"] = g_daily_count + 1
+            self.storage.save_rate_limit_record("__global_aggregate__", global_rec)
+
         logger.info(
             f"Consumed query quota for user '{clean_user}'. "
             f"Daily: {daily_count}/{settings.daily_query_limit} | "

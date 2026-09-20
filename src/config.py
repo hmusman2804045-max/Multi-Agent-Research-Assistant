@@ -78,6 +78,7 @@ class Settings(BaseModel):
 
     # Rate Limiting & User Quotas (Phase 6)
     daily_query_limit: int = Field(default_factory=lambda: int(os.getenv("DAILY_QUERY_LIMIT", "10")))
+    global_daily_query_limit: int = Field(default_factory=lambda: int(os.getenv("GLOBAL_DAILY_QUERY_LIMIT", "100")))
     requests_per_minute_limit: int = Field(default_factory=lambda: int(os.getenv("REQUESTS_PER_MINUTE_LIMIT", "3")))
     auth_max_failed_attempts: int = Field(default_factory=lambda: int(os.getenv("AUTH_MAX_FAILED_ATTEMPTS", "5")))
     auth_lockout_minutes: int = Field(default_factory=lambda: int(os.getenv("AUTH_LOCKOUT_MINUTES", "15")))

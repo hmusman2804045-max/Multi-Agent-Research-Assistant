@@ -84,12 +84,19 @@ class ResearchPipeline:
         Returns:
             ResearchResult with plan breakdown, verified claims, cited report, and granular telemetry.
         """
-        # Step 0: Gate check - Enforce Rate Limiting & Quota before any computation
-        effective_user = user_id or "guest"
-        quota_status = self.rate_limiter.check_and_consume(effective_user)
-
-        # Validate and sanitize input query at the pipeline entry gate
+        # Step 0: Validate and sanitize input query FIRST at the pipeline entry gate
+        # Invalid queries (e.g. empty or >500 chars) fail immediately without consuming user quota.
         query = sanitize_user_input(query)
+
+        # Step 1: Gate check - Enforce Rate Limiting & Quota only AFTER query is validated
+        if user_id:
+            effective_user = user_id
+        elif session_id:
+            effective_user = session_id if session_id.startswith("guest") else f"guest_{session_id}"
+        else:
+            effective_user = "guest"
+
+        quota_status = self.rate_limiter.check_and_consume(effective_user)
         start_total = time.perf_counter()
 
         # Step 1: Execute Planner Agent

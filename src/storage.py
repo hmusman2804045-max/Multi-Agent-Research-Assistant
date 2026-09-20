@@ -198,7 +198,6 @@ class ResearchStorage:
             {"$set": record},
             upsert=True,
         )
-        return self.users_col.count_documents({"user_id": clean_user}) > 0
 
     def save_session(self, session: ResearchSessionDocument) -> str:
         """Persist or update a research session document using dual-key filtering.
