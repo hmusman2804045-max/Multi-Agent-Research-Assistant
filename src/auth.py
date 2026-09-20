@@ -195,18 +195,38 @@ def authenticate_user(
         Tuple of (UserAccountDocument, jwt_token_string).
 
     Raises:
+        AccountLockedError: If account is locked due to repeated failed logins.
         UserNotFoundError: If user_id does not exist.
         InvalidCredentialsError: If password does not match.
     """
+    from src.rate_limiter import RateLimiter, AccountLockedError
+
     clean_user = user_id.strip()
+    limiter = RateLimiter(storage=storage)
+
+    # 1. Check if account is temporarily locked out
+    lockout_secs = limiter.check_login_lockout(clean_user)
+    if lockout_secs:
+        mins = max(1, (lockout_secs + 59) // 60)
+        logger.warning(f"Blocked login attempt for locked account '{clean_user}'. {lockout_secs}s remaining.")
+        raise AccountLockedError(
+            f"Account '{clean_user}' is temporarily locked due to multiple failed login attempts. "
+            f"Please wait {mins} minute(s) ({lockout_secs}s) before trying again.",
+            remaining_lockout_seconds=lockout_secs,
+        )
+
     user_doc = storage.get_user(clean_user)
     if not user_doc:
+        limiter.record_login_attempt(clean_user, success=False)
         raise UserNotFoundError(f"User '{clean_user}' not found.")
 
     if not verify_password(password, user_doc.salt, user_doc.password_hash):
+        limiter.record_login_attempt(clean_user, success=False)
         logger.warning(f"Failed authentication attempt for user '{clean_user}'.")
         raise InvalidCredentialsError("Invalid username or password.")
 
+    # Successful login: reset failed login attempts
+    limiter.record_login_attempt(clean_user, success=True)
     token = create_access_token(user_id=clean_user, email=user_doc.email)
     logger.info(f"User '{clean_user}' authenticated successfully.")
     return user_doc, token

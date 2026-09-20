@@ -113,6 +113,7 @@ class ResearchStorage:
         self.db: Database = self.client[self.db_name]
         self.sessions_col: Collection = self.db["research_sessions"]
         self.users_col: Collection = self.db["users"]
+        self.rate_limits_col: Collection = self.db["rate_limits"]
         self._ensure_indexes()
 
     def _ensure_indexes(self) -> None:
@@ -134,6 +135,12 @@ class ResearchStorage:
                 [("user_id", pymongo.ASCENDING)],
                 unique=True,
                 name="idx_users_user_id_unique",
+            )
+            # Unique index on user_id for rate limits collection
+            self.rate_limits_col.create_index(
+                [("user_id", pymongo.ASCENDING)],
+                unique=True,
+                name="idx_rate_limits_user_id_unique",
             )
             logger.debug("MongoDB indexes initialized successfully.")
         except Exception as e:
@@ -163,6 +170,34 @@ class ResearchStorage:
     def user_exists(self, user_id: str) -> bool:
         """Check if a user account already exists."""
         clean_user = _sanitize_key(user_id, "user_id")
+        return self.users_col.count_documents({"user_id": clean_user}) > 0
+
+    def get_rate_limit_record(self, user_id: str) -> Dict[str, Any]:
+        """Retrieve or initialize rate limit document for a user."""
+        clean_user = _sanitize_key(user_id, "user_id")
+        doc = self.rate_limits_col.find_one({"user_id": clean_user})
+        if not doc:
+            return {
+                "user_id": clean_user,
+                "daily_date": "",
+                "daily_count": 0,
+                "minute_timestamps": [],
+                "failed_login_attempts": 0,
+                "lockout_until": None,
+            }
+        doc.pop("_id", None)
+        return doc
+
+    def save_rate_limit_record(self, user_id: str, record: Dict[str, Any]) -> None:
+        """Persist updated rate limit document for a user."""
+        clean_user = _sanitize_key(user_id, "user_id")
+        record["user_id"] = clean_user
+        record["updated_at"] = datetime.now(timezone.utc)
+        self.rate_limits_col.update_one(
+            {"user_id": clean_user},
+            {"$set": record},
+            upsert=True,
+        )
         return self.users_col.count_documents({"user_id": clean_user}) > 0
 
     def save_session(self, session: ResearchSessionDocument) -> str:

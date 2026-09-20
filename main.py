@@ -24,14 +24,21 @@ from src.auth import (
     UserIdentity,
 )
 from src.storage import ResearchStorage
+from src.rate_limiter import (
+    RateLimiter,
+    RateLimitExceededError,
+    DailyLimitExceededError,
+    BurstRateLimitExceededError,
+    AccountLockedError,
+)
 
 init(autoreset=True)
 
 
 def print_banner():
     print(Fore.CYAN + Style.BRIGHT + "=" * 75)
-    print(Fore.CYAN + Style.BRIGHT + "   [*] Multi-Agent Research Assistant — Phase 5 (Auth & User Isolation)")
-    print(Fore.CYAN + Style.BRIGHT + "   🔐 Auth Gate ➔ 🧠 Plan ➔ 🔍 Search ➔ 📝 Summarize ➔ 🔬 Verify ➔ ✍️ Report")
+    print(Fore.CYAN + Style.BRIGHT + "   [*] Multi-Agent Research Assistant — Phase 6 (Rate Limiting & Quotas)")
+    print(Fore.CYAN + Style.BRIGHT + "   ⏱️ Rate Limiter ➔ 🔐 Auth ➔ 🧠 Plan ➔ 🔍 Search ➔ 📝 Summarize ➔ ✍️ Report")
     print(Fore.CYAN + Style.BRIGHT + "=" * 75 + "\n")
 
 
@@ -59,7 +66,7 @@ def handle_register(storage: ResearchStorage, user_arg: Optional[str], password_
 
 
 def handle_login(storage: ResearchStorage, user_arg: Optional[str], password_arg: Optional[str]) -> Optional[UserIdentity]:
-    """Handle user authentication via credentials."""
+    """Handle user authentication via credentials with lockout protection."""
     username = user_arg or input(Fore.YELLOW + "Enter username: " + Fore.WHITE).strip()
     if not username:
         print(Fore.RED + "❌ Username cannot be empty.")
@@ -76,6 +83,9 @@ def handle_login(storage: ResearchStorage, user_arg: Optional[str], password_arg
         print(Fore.GREEN + Style.BRIGHT + f"\n✅ Logged in successfully as '{identity.user_id}'!")
         print(Fore.GREEN + f"🔑 Access Token:\n" + Fore.YELLOW + f"{token}\n")
         return identity
+    except AccountLockedError as e:
+        print(Fore.RED + Style.BRIGHT + f"\n🔒 Account Locked: {e}\n")
+        return None
     except AuthError as e:
         print(Fore.RED + Style.BRIGHT + f"\n❌ Authentication Failed: {e}\n")
         return None
@@ -119,6 +129,22 @@ def handle_delete_session(storage: ResearchStorage, user_id: str, session_id: st
         print(Fore.GREEN + f"✅ Successfully deleted session '{session_id}' for user '{user_id}'.")
     else:
         print(Fore.RED + f"❌ Session '{session_id}' not found or unauthorized for user '{user_id}'.")
+
+
+def handle_quota_status(storage: ResearchStorage, user_id: str):
+    """Display rate limit and quota status for a user."""
+    limiter = RateLimiter(storage=storage)
+    q = limiter.get_quota_status(user_id)
+    hours = q.seconds_to_daily_reset // 3600
+    mins = (q.seconds_to_daily_reset % 3600) // 60
+
+    print(Fore.CYAN + Style.BRIGHT + "=" * 75)
+    print(Fore.CYAN + Style.BRIGHT + f"   📊 USER QUOTA & RATE LIMIT TELEMETRY: {user_id}")
+    print(Fore.CYAN + Style.BRIGHT + "=" * 75)
+    print(Fore.YELLOW + f"  • Daily Query Cap:         {Fore.WHITE}{q.daily_used} / {q.daily_limit} used ({Fore.GREEN}{q.daily_remaining} remaining{Fore.WHITE})")
+    print(Fore.YELLOW + f"  • Daily Reset Time:        {Fore.WHITE}00:00 UTC (in {hours}h {mins}m)")
+    print(Fore.YELLOW + f"  • Burst Rate (RPM):        {Fore.WHITE}{q.rpm_used} / {q.rpm_limit} req/min ({Fore.GREEN}{q.rpm_remaining} slots available{Fore.WHITE})")
+    print(Fore.CYAN + Style.BRIGHT + "=" * 75 + "\n")
 
 
 def run_pipeline(query: str, user_id: Optional[str] = None, storage: Optional[ResearchStorage] = None):
@@ -189,6 +215,12 @@ def run_pipeline(query: str, user_id: Optional[str] = None, storage: Optional[Re
             print(Fore.WHITE + f"  • User ID:                 {result.user_id}")
         else:
             print(Fore.LIGHTBLACK_EX + f"  • Session Storage:         Skipped (Guest/Unauthenticated)")
+
+        if result.quota_status:
+            qs = result.quota_status
+            print(Fore.GREEN + f"  • Daily Quota:             {qs.daily_used} / {qs.daily_limit} used ({qs.daily_remaining} left)")
+            print(Fore.GREEN + f"  • Burst Rate:              {qs.rpm_used} / {qs.rpm_limit} req/min")
+
         print(Fore.WHITE + f"  • Step 1 (Planning):       {result.planning_time_sec}s")
         print(Fore.WHITE + f"  • Step 2 (Multi-Search):   {result.search_time_sec}s")
         print(Fore.WHITE + f"  • Step 3 (Summarization):  {result.summarization_time_sec}s")
@@ -204,6 +236,12 @@ def run_pipeline(query: str, user_id: Optional[str] = None, storage: Optional[Re
             print(Fore.GREEN + Style.BRIGHT + f"  • Total Tokens Consumed:   {result.usage.get('total_tokens', 0)}")
         print(Fore.CYAN + "=" * 75 + "\n")
 
+    except BurstRateLimitExceededError as e:
+        print(Fore.RED + Style.BRIGHT + f"\n⏱️ Rate Limit Exceeded (RPM): {e}")
+        print(Fore.YELLOW + f"💡 Please wait {e.retry_after_seconds}s before submitting another research query.\n")
+    except DailyLimitExceededError as e:
+        print(Fore.RED + Style.BRIGHT + f"\n🛑 Daily Quota Reached: {e}")
+        print(Fore.YELLOW + "💡 Your daily search quota will reset automatically at 00:00 UTC.\n")
     except ValueError as e:
         print(Fore.RED + Style.BRIGHT + f"\n❌ Configuration Error: {e}")
         print(Fore.YELLOW + f"💡 Please ensure you have created a valid .env file in:\n   {BASE_DIR / '.env'}")
@@ -212,7 +250,7 @@ def run_pipeline(query: str, user_id: Optional[str] = None, storage: Optional[Re
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Multi-Agent Research Assistant (Phase 5 CLI - Auth & User Isolation)")
+    parser = argparse.ArgumentParser(description="Multi-Agent Research Assistant (Phase 6 CLI - Rate Limiting & Quotas)")
     parser.add_argument("-q", "--query", type=str, help="Research question to process")
     parser.add_argument("-u", "--user", type=str, default=None, help="Username (for register or login)")
     parser.add_argument("-p", "--password", type=str, default=None, help="Password (for register or login)")
@@ -220,6 +258,7 @@ def main():
     parser.add_argument("--register", action="store_true", help="Register a new user account")
     parser.add_argument("--login", action="store_true", help="Authenticate with credentials and obtain a JWT token")
     parser.add_argument("--token", type=str, default=None, help="Signed JWT access token for authentication")
+    parser.add_argument("--quota", action="store_true", help="View current rate limit and daily quota usage")
     parser.add_argument("--history", action="store_true", help="List past research session history (Authentication Required)")
     parser.add_argument("--load-session", type=str, metavar="SESSION_ID", help="Load and view a past session report (Authentication Required)")
     parser.add_argument("--delete-session", type=str, metavar="SESSION_ID", help="Delete a past research session (Authentication Required)")
@@ -253,7 +292,14 @@ def main():
         if not authenticated_identity:
             sys.exit(1)
 
-    # Flow 3: Protected Session Actions (Strictly require authenticated identity)
+    effective_user = authenticated_identity.user_id if authenticated_identity else "guest"
+
+    # Flow 3: Quota Inspection
+    if args.quota:
+        handle_quota_status(storage, effective_user)
+        return
+
+    # Flow 4: Protected Session Actions (Strictly require authenticated identity)
     if args.history:
         if not authenticated_identity:
             print(Fore.RED + Style.BRIGHT + "❌ Authentication Required: Viewing session history requires authentication.\n"
@@ -278,7 +324,7 @@ def main():
         handle_delete_session(storage, authenticated_identity.user_id, args.delete_session)
         return
 
-    # Flow 4: Execute Research Pipeline
+    # Flow 5: Execute Research Pipeline
     user_id = authenticated_identity.user_id if authenticated_identity else None
 
     if args.query:

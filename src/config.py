@@ -76,6 +76,12 @@ class Settings(BaseModel):
     jwt_algorithm: str = Field(default_factory=lambda: os.getenv("JWT_ALGORITHM", "HS256"))
     auth_token_expire_minutes: int = Field(default_factory=lambda: int(os.getenv("AUTH_TOKEN_EXPIRE_MINUTES", "1440")))
 
+    # Rate Limiting & User Quotas (Phase 6)
+    daily_query_limit: int = Field(default_factory=lambda: int(os.getenv("DAILY_QUERY_LIMIT", "10")))
+    requests_per_minute_limit: int = Field(default_factory=lambda: int(os.getenv("REQUESTS_PER_MINUTE_LIMIT", "3")))
+    auth_max_failed_attempts: int = Field(default_factory=lambda: int(os.getenv("AUTH_MAX_FAILED_ATTEMPTS", "5")))
+    auth_lockout_minutes: int = Field(default_factory=lambda: int(os.getenv("AUTH_LOCKOUT_MINUTES", "15")))
+
     def validate_keys(self) -> None:
         """Ensure required API keys and security credentials are valid."""
         missing = []

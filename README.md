@@ -5,9 +5,10 @@
 [![Tavily](https://img.shields.io/badge/Web%20Search-Tavily%20API-green.svg)](https://tavily.com/)
 [![MongoDB](https://img.shields.io/badge/Database-MongoDB%20%2F%20MongoMock-brightgreen.svg)](https://www.mongodb.com/)
 [![JWT](https://img.shields.io/badge/Auth-PyJWT%20(HS256)-blue.svg)](https://pyjwt.readthedocs.io/)
-[![Phase](https://img.shields.io/badge/Status-Phase%205%20(Auth%20%26%20User%20Isolation)-success.svg)](https://github.com/hmusman2804045-max/Multi-Agent-Research-Assistant)
+[![Rate Limiter](https://img.shields.io/badge/Protection-Sliding%20Window%20%2B%20Lockout-red.svg)](https://github.com/hmusman2804045-max/Multi-Agent-Research-Assistant)
+[![Phase](https://img.shields.io/badge/Status-Phase%206%20(Rate%20Limiting%20%26%20Quotas)-success.svg)](https://github.com/hmusman2804045-max/Multi-Agent-Research-Assistant)
 
-An autonomous multi-agent AI system designed to conduct live web research, distill factual claims, cross-reference sources, detect contradictions, generate grounded, cited research reports, and securely isolate per-user research history using cryptographic JWT authentication and strict dual-key database queries.
+An autonomous multi-agent AI system designed to conduct live web research, distill factual claims, cross-reference sources, detect contradictions, generate grounded, cited research reports, securely isolate per-user research history, and enforce robust per-user daily search quotas, sliding-window RPM burst limits, and authentication brute-force defenses.
 
 ---
 
@@ -15,15 +16,26 @@ An autonomous multi-agent AI system designed to conduct live web research, disti
 
 Traditional LLMs hallucinate or rely on frozen training data. Unlike standard static RAG (Retrieval-Augmented Generation) which only queries pre-uploaded documents, this **Multi-Agent Research Assistant** dynamically plans research strategies, searches the live internet across multiple focused angles, extracts structured factual claims, cross-references sources to detect discrepancies, and synthesizes structured reports with inline citations.
 
-In **Phase 5**, the system introduces **cryptographic JWT authentication** (`src/auth.py`) and **strict per-user data isolation** (`src/storage.py`) using MongoDB / MongoMock with mandatory dual-key query filtering (`{"user_id": user_id, "session_id": session_id}`).
+In **Phase 6**, the system introduces **per-user rate limiting & quota management** (`src/rate_limiter.py`) directly on top of Phase 5's authenticated identities (enforcing PRD Lesson 4):
+1. **Daily Query Cap (10–15 searches/day per user)**: Protects shared Tavily API allowances.
+2. **Requests-Per-Minute (RPM) Burst Limiter (3 req/min)**: Sliding-window counter protecting backend and Groq LLM inference from burst flooding.
+3. **Authentication Brute-Force Defense**: Progressive lockout (5 failed attempts $\rightarrow$ 15-minute lockout) neutralizing credential-stuffing attacks.
 
-### Current Milestone: **Phase 5 — Full 5-Agent Pipeline with Auth & Per-User Isolated Storage**
+### Current Milestone: **Phase 6 — Rate Limiting, User Quotas & Full Multi-Agent Pipeline**
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │        👤 Authenticated User / JWT Identity             │
 └────────────────────────────┬────────────────────────────┘
                              │
+                             ▼
+┌─────────────────────────────────────────────────────────┐
+│              ⏱️ Rate Limiter Entry Gate                 │
+│  - Checks Burst RPM (Sliding 60-second window: ≤ 3 RPM) │
+│  - Checks Daily Query Quota (≤ 10/day, resets 00:00 UTC)│
+│  - Blocks exhausted requests before any agent or API hit│
+└────────────────────────────┬────────────────────────────┘
+                             │ (Quota Approved & Consumed)
                              ▼
 ┌─────────────────────────────────────────────────────────┐
 │                 User Research Question                  │
@@ -88,15 +100,16 @@ In **Phase 5**, the system introduces **cryptographic JWT authentication** (`src
 
 ## 🏗️ Architecture & Core Components
 
-- **Authentication & JWT Layer (`src/auth.py`)**: Generates and validates signed JWT tokens, enforces strict algorithm whitelisting (preventing 'none' algorithm bypasses), verifies token expiration (`exp`) and issuance (`iat`), and extracts typed `UserIdentity`.
-- **Per-User Isolated Storage (`src/storage.py`)**: MongoDB / MongoMock client enforcing strict dual-key query filtering `{"user_id": user_id, "session_id": session_id}` (PRD Lesson 5). Indexes compound unique `[("user_id", 1), ("session_id", 1)]` and secondary `[("user_id", 1), ("created_at", -1)]`.
+- **Rate Limiting & Quota Layer (`src/rate_limiter.py`)**: Intercepts requests before any agent execution, tracking sliding 60-second burst windows, daily query caps per user, and authentication lockouts.
+- **Authentication & JWT Layer (`src/auth.py`)**: Handles user registration with PBKDF2-HMAC-SHA256 password hashing (100,000 rounds, unique random salts), credential verification, constant-time comparisons, and signed JWT session token generation/verification with algorithm whitelisting.
+- **Per-User Isolated Storage (`src/storage.py`)**: MongoDB / MongoMock client enforcing strict dual-key query filtering `{"user_id": user_id, "session_id": session_id}` (PRD Lesson 5). Indexes compound unique `[("user_id", 1), ("session_id", 1)]`, secondary `[("user_id", 1), ("created_at", -1)]`, and `[("user_id", 1)]` for users and rate limits.
 - **Security & Sanitization Module (`src/security.py`)**: Validates user queries, neutralizes XML/HTML structural injections via `html.escape(quote=True)`, and safely encloses untrusted web content in structural delimiters.
 - **Planner Agent (`src/agents/planner_agent.py`)**: Analyzes research questions and produces 2–4 targeted sub-queries via deterministic JSON mode with automatic fallback.
 - **Search Agent (`src/agents/search_agent.py`)**: Interacts with the **Tavily Search API** to execute multi-query searches and performs **score-based URL deduplication**.
 - **Summarizer Agent (`src/agents/summarizer_agent.py`)**: Distills raw search results into structured factual claims (`key_claims`) and noise-free summaries per source.
 - **Fact-Checker Agent (`src/agents/fact_checker_agent.py`)**: Cross-references claims across all sources, compiling consensus facts, single-source observations, and explicitly flagging contradictions.
 - **Writer Agent (`src/agents/writer_agent.py`)**: Synthesizes verified findings into a cited markdown report, creating a dedicated **Contradictions & Discrepancies** section when conflicts are detected.
-- **Pipeline Coordinator (`src/pipeline.py`)**: Orchestrates the 5-agent execution loop, auto-persists session reports to storage, and captures granular latency and token telemetry across all stages.
+- **Pipeline Coordinator (`src/pipeline.py`)**: Orchestrates the 5-agent execution loop with pre-execution rate limiting checks, session persistence, and granular latency/token telemetry.
 - **Centralized Logging (`src/logger.py`)**: Structured application logging to `logs/research_assistant.log` with live colored console streaming.
 - **Validated Configuration (`src/config.py`)**: Type-safe settings management using Pydantic and `python-dotenv`.
 
@@ -104,40 +117,37 @@ In **Phase 5**, the system introduces **cryptographic JWT authentication** (`src
 
 ## 🛡️ Security & Engineering Safeguards
 
-1. **Per-User Data Isolation (PRD Lesson 5)**:
+1. **Per-User Rate Limiting & Quotas (PRD Lesson 4)**:
+   - **Burst Protection**: Max 3 requests/minute per user (`REQUESTS_PER_MINUTE_LIMIT`) enforced via sliding 60-second window counter.
+   - **Budget Protection**: Max 10 queries/day per user (`DAILY_QUERY_LIMIT`), automatically resetting at 00:00 UTC.
+   - **Zero API Leakage**: When quota or burst limits are exceeded, requests are rejected immediately at the entry gate, preventing any Groq or Tavily API consumption.
+2. **Authentication Brute-Force & Lockout Defense**:
+   - Progressive failed login tracking (`AUTH_MAX_FAILED_ATTEMPTS=5`).
+   - Temporary 15-minute account lockout (`AUTH_LOCKOUT_MINUTES=15`) upon reaching max failed attempts.
+3. **Per-User Data Isolation (PRD Lesson 5)**:
    - Every read, update, or delete operation in storage strictly requires both `user_id` and `session_id`.
    - Architectural impossibility of IDOR (Insecure Direct Object Reference) vulnerabilities: User B cannot query or delete User A's session even if they know the exact `session_id`.
-   - Keys are sanitized against null-byte and query injection characters.
-2. **Cryptographic JWT Authentication**:
+4. **Cryptographic JWT Authentication & Password Hashing**:
+   - PBKDF2-HMAC-SHA256 password hashing with unique 16-byte random salts per user.
    - Algorithm whitelisting prevents algorithm confusion and unsigned 'none' token attacks.
    - Mandatory expiration (`exp`) and issued-at (`iat`) validation.
-   - User identity attributes are strictly validated with Pydantic.
-3. **Prompt Injection Defenses**:
+5. **Prompt Injection Defenses**:
    - All web content and extracted claims are framed inside `<untrusted_source_content>` and `<verified_fact_analysis>` XML blocks.
    - All attribute values (`title`, `url`, `query`) and text contents are escaped with `html.escape(quote=True)`.
-   - System prompts enforce strict instruction hierarchy: retrieved content is passive data and cannot override instructions.
-4. **Input Validation & Capping**:
-   - User queries capped at 500 characters (`MAX_QUERY_LENGTH`).
-   - Snippets capped at 1,500 characters per source (`MAX_CONTENT_CHARS_PER_SOURCE`).
-   - Non-printable and Unicode BIDI override characters are automatically stripped.
-5. **Operational Best Practices**:
-   - Zero hardcoded secrets (`.env` gitignored).
-   - Exact pinned dependencies (`requirements.txt`).
-   - Graceful in-memory `mongomock` fallback when no live MongoDB connection string is provided.
 
 ---
 
 ## 📊 Benchmarks & Telemetry
 
-| Metric | Phase 1 (Single-Search) | Phase 2 (Planner + Search) | Phase 3 (Security) | Phase 4 (5-Agent Verified) | Phase 5 (Auth & Storage) | Target | Status |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Planning Latency (Groq)** | N/A | ~0.8s – 1.2s | ~0.8s – 1.3s | ~0.8s – 1.3s | ~0.8s – 1.2s | < 3.0s | ✅ Sub-second |
-| **Search Latency (Tavily)** | ~0.95s – 4.0s | ~8.0s – 15.0s | ~8.0s – 14.0s | ~8.0s – 12.0s | ~8.0s – 12.5s | < 20.0s | ✅ Optimal |
-| **Summarization Latency (Groq)** | N/A | N/A | N/A | ~1.5s – 2.5s | ~1.5s – 2.7s | < 5.0s | ✅ Fast |
-| **Fact-Checking Latency (Groq)** | N/A | N/A | N/A | ~1.0s – 1.8s | ~1.0s – 2.0s | < 4.0s | ✅ Fast |
-| **Synthesis Latency (Groq)** | ~2.1s – 3.2s | ~1.7s – 3.5s | ~2.0s – 3.5s | ~2.5s – 4.8s | ~2.5s – 4.8s | < 10.0s | ✅ Optimal |
-| **Storage Overhead** | N/A | N/A | N/A | N/A | **< 5ms (Dual-Key indexed)** | < 50ms | ✅ Instant |
-| **Cost Per Query** | **$0.00** (Free Tier) | **$0.00** (Free Tier) | **$0.00** (Free Tier) | **$0.00** (Free Tier) | **$0.00** (Free Tier) | $0.00 | ✅ 100% Free |
+| Metric | Phase 1 | Phase 2 | Phase 3 | Phase 4 | Phase 5 | Phase 6 (Rate Limited) | Target | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Planning Latency (Groq)** | N/A | ~0.8s – 1.2s | ~0.8s – 1.3s | ~0.8s – 1.3s | ~0.8s – 1.2s | ~0.8s – 1.2s | < 3.0s | ✅ Sub-second |
+| **Search Latency (Tavily)** | ~0.95s – 4.0s | ~8.0s – 15.0s | ~8.0s – 14.0s | ~8.0s – 12.0s | ~8.0s – 12.5s | ~8.0s – 13.0s | < 20.0s | ✅ Optimal |
+| **Summarization Latency (Groq)** | N/A | N/A | N/A | ~1.5s – 2.5s | ~1.5s – 2.7s | ~1.5s – 3.0s | < 5.0s | ✅ Fast |
+| **Fact-Checking Latency (Groq)** | N/A | N/A | N/A | ~1.0s – 1.8s | ~1.0s – 2.0s | ~1.0s – 2.5s | < 4.0s | ✅ Fast |
+| **Synthesis Latency (Groq)** | ~2.1s – 3.2s | ~1.7s – 3.5s | ~2.0s – 3.5s | ~2.5s – 4.8s | ~2.5s – 4.8s | ~2.5s – 4.8s | < 10.0s | ✅ Optimal |
+| **Rate Limit Overhead** | N/A | N/A | N/A | N/A | N/A | **< 1ms** | < 10ms | ✅ Instant |
+| **Cost Per Query** | **$0.00** | **$0.00** | **$0.00** | **$0.00** | **$0.00** | **$0.00** (Free Tier) | $0.00 | ✅ 100% Free |
 
 ---
 
@@ -146,19 +156,20 @@ In **Phase 5**, the system introduces **cryptographic JWT authentication** (`src
 ```
 Multi-Agent-Research-Assistant/
 ├── .gitignore               # Protection for secrets, logs, and venvs
-├── .env.example             # Configuration template (includes DB, JWT, and agent settings)
+├── .env.example             # Configuration template (includes DB, JWT, Rate limits, and agent settings)
 ├── requirements.txt         # Exact-pinned dependencies
-├── main.py                  # Interactive CLI entry point (with Auth & Session management)
+├── main.py                  # Interactive CLI entry point (with Auth, Rate Limiting & Quota telemetry)
 ├── logs/                    # Runtime logs (gitignored)
 │   └── research_assistant.log
 ├── src/
 │   ├── __init__.py
-│   ├── auth.py              # Cryptographic JWT authentication & token management
-│   ├── storage.py           # MongoDB / MongoMock dual-key isolated session storage
+│   ├── rate_limiter.py      # Rate limiting, daily quota tracking & login lockout layer
+│   ├── auth.py              # Cryptographic JWT authentication, PBKDF2 hashing & token management
+│   ├── storage.py           # MongoDB / MongoMock dual-key isolated session & rate limit storage
 │   ├── config.py            # Settings validation & hyperparameters
 │   ├── logger.py            # Centralized logging (live console streaming + file logging)
 │   ├── security.py          # Input sanitization & structural prompt injection defenses
-│   ├── pipeline.py          # Five-Agent Pipeline coordinator with session persistence
+│   ├── pipeline.py          # Five-Agent Pipeline coordinator with rate limit interception
 │   └── agents/
 │       ├── __init__.py
 │       ├── planner_agent.py      # Query decomposition agent
@@ -171,7 +182,8 @@ Multi-Agent-Research-Assistant/
     ├── test_phase2.py       # Phase 2 tests
     ├── test_phase3.py       # Phase 3 security & sanitization tests
     ├── test_phase4.py       # Phase 4 summarization, fact-checking & 5-agent tests
-    └── test_phase5.py       # Phase 5 JWT authentication & dual-key storage isolation tests
+    ├── test_phase5.py       # Phase 5 JWT authentication & dual-key storage isolation tests
+    └── test_phase6.py       # Phase 6 Rate limiting, quotas & brute-force lockout tests
 ```
 
 ---
@@ -238,10 +250,15 @@ MAX_CONTENT_CHARS_PER_SOURCE=1500
 # Database & Authentication (Phase 5)
 MONGODB_URI=
 MONGODB_DB_NAME=research_assistant
-# Optional: If left blank, a cryptographically strong secret is generated and stored locally in .jwt_secret
 JWT_SECRET_KEY=
 JWT_ALGORITHM=HS256
 AUTH_TOKEN_EXPIRE_MINUTES=1440
+
+# Rate Limiting & User Quotas (Phase 6)
+DAILY_QUERY_LIMIT=10
+REQUESTS_PER_MINUTE_LIMIT=3
+AUTH_MAX_FAILED_ATTEMPTS=5
+AUTH_LOCKOUT_MINUTES=15
 ```
 
 ### 4. Run the Research Assistant CLI
@@ -256,7 +273,12 @@ python main.py --register -u alice_researcher -p "MySecurePassword123!"
 python main.py --login -u alice_researcher -p "MySecurePassword123!"
 ```
 
-**Run Research with Signed JWT Token (Session Auto-Saved to Private Account):**
+**Check Your Real-Time Rate Limit & Daily Quota Status:**
+```bash
+python main.py --token <YOUR_JWT_TOKEN> --quota
+```
+
+**Run Research with Signed JWT Token (Auto-Quota Checked & Persisted):**
 ```bash
 python main.py --token <YOUR_JWT_TOKEN> -q "What is quantum error correction surface code?"
 ```
@@ -276,7 +298,7 @@ python main.py --token <YOUR_JWT_TOKEN> --load-session <SESSION_ID>
 python main.py --token <YOUR_JWT_TOKEN> --delete-session <SESSION_ID>
 ```
 
-**Run in Guest / Anonymous Mode (No History Saved):**
+**Run in Guest / Anonymous Mode (No History Saved, Subject to Guest Quotas):**
 ```bash
 python main.py -q "Explain how gradient descent works"
 ```
@@ -295,7 +317,7 @@ python -m unittest discover -s tests -p "test_*.py"
 - [x] **Phase 3: Prompt Injection & Content Security** — Structural delimiters and sanitization of untrusted web content.
 - [x] **Phase 4: Summarizer & Fact-Checker Agents** — Cross-reference sources and flag contradictions.
 - [x] **Phase 5: Authentication & User Isolation** — Cryptographic JWT Auth + MongoDB Atlas with dual-key (`user_id` + `session_id`) isolation.
-- [ ] **Phase 6: Rate Limiting Layer** — Per-user quota management to protect API budgets.
+- [x] **Phase 6: Rate Limiting Layer** — Per-user quota management (10 queries/day, 3 RPM burst limit, brute-force lockout) to protect API budgets.
 - [ ] **Phase 7: Frontend & Deployment** — Responsive UI deployed on Hugging Face Spaces.
 
 ---

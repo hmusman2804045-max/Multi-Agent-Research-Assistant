@@ -135,16 +135,31 @@ class FactCheckerAgent:
         logger.info(f"Invoking FactCheckerAgent with model '{self.model}' across {len(sources)} sources...")
 
         try:
-            chat_completion = self.client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                response_format={"type": "json_object"},
-            )
+            try:
+                chat_completion = self.client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    model=self.model,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    response_format={"type": "json_object"},
+                )
+            except Exception as req_err:
+                if "400" in str(req_err) or "json_validate_failed" in str(req_err):
+                    logger.warning("Retrying FactCheckerAgent without response_format constraint...")
+                    chat_completion = self.client.chat.completions.create(
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        model=self.model,
+                        temperature=self.temperature,
+                        max_tokens=self.max_tokens,
+                    )
+                else:
+                    raise req_err
 
             msg = chat_completion.choices[0].message
             raw_content = msg.content or getattr(msg, "reasoning", "") or ""
