@@ -1,30 +1,127 @@
-"""Phase 5 Unit & Security Test Suite.
+"""Phase 5 Unit, Security, & Authentication Gate Test Suite.
 
 Tests:
-1. Authentication & JWT Token Security (Signature verification, expiration, tampering, algorithm restriction).
-2. Per-User Dual-Key MongoDB/MongoMock Storage (Lesson 5: Isolation, prevention of IDOR / cross-user data leakage).
-3. End-to-End Pipeline Integration with User Session Persistence.
+1. Password Hashing & Credential Verification (PBKDF2-HMAC-SHA256, unique salts, constant-time comparison).
+2. User Registration & Authentication Gate (Gated access to JWT tokens and session data).
+3. JWT Token Security (Signature verification, expiration, tampering, algorithm restriction).
+4. Insecure Secret Detection & Ephemeral Key Generation.
+5. Per-User Dual-Key Storage Isolation (Lesson 5: Prevention of IDOR / cross-user data leakage).
+6. End-to-End Pipeline Integration with User Session Persistence.
 """
 
+import os
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 import jwt
 
-from src.config import settings
+from src.config import Settings
 from src.auth import (
+    hash_password,
+    verify_password,
+    register_user,
+    authenticate_user,
     create_access_token,
     verify_access_token,
     UserIdentity,
     AuthError,
     TokenExpiredError,
     InvalidTokenError,
+    InvalidCredentialsError,
+    UserAlreadyExistsError,
+    UserNotFoundError,
+    WeakPasswordError,
 )
-from src.storage import ResearchStorage, ResearchSessionDocument
+from src.storage import ResearchStorage, ResearchSessionDocument, UserAccountDocument
 from src.pipeline import ResearchPipeline, ResearchResult
 from src.agents.planner_agent import PlanOutput
 from src.agents.summarizer_agent import SummaryOutput, SourceSummary
 from src.agents.fact_checker_agent import FactCheckOutput, ConsensusFact
+
+
+class TestCredentialAndAuthGate(unittest.TestCase):
+    """Test PBKDF2 password hashing, credential verification, and user management."""
+
+    def setUp(self):
+        self.storage = ResearchStorage(force_mock=True, db_name="test_auth_db")
+
+    def test_password_hashing_and_verification(self):
+        password = "SuperSecretPassword123!"
+        salt_hex, hash_hex = hash_password(password)
+
+        self.assertIsInstance(salt_hex, str)
+        self.assertIsInstance(hash_hex, str)
+        self.assertEqual(len(bytes.fromhex(salt_hex)), 16)
+
+        # Correct password verifies
+        self.assertTrue(verify_password(password, salt_hex, hash_hex))
+
+        # Incorrect password fails
+        self.assertFalse(verify_password("WrongPassword123!", salt_hex, hash_hex))
+
+    def test_unique_salts_for_same_password(self):
+        password = "SamePassword123!"
+        salt1, hash1 = hash_password(password)
+        salt2, hash2 = hash_password(password)
+
+        self.assertNotEqual(salt1, salt2)
+        self.assertNotEqual(hash1, hash2)
+
+    def test_weak_password_rejected(self):
+        with self.assertRaises(WeakPasswordError):
+            hash_password("short")
+        with self.assertRaises(WeakPasswordError):
+            hash_password("")
+
+    def test_user_registration_and_authentication(self):
+        # 1. Register new user
+        user_doc = register_user(
+            self.storage,
+            user_id="khadija_account",
+            password="SecurePassword456!",
+            email="khadija@example.com",
+        )
+        self.assertIsInstance(user_doc, UserAccountDocument)
+        self.assertEqual(user_doc.user_id, "khadija_account")
+        self.assertEqual(user_doc.email, "khadija@example.com")
+
+        # 2. Cannot register duplicate username
+        with self.assertRaises(UserAlreadyExistsError):
+            register_user(
+                self.storage,
+                user_id="khadija_account",
+                password="AnotherPassword789!",
+            )
+
+        # 3. Authenticate with correct credentials
+        auth_doc, token = authenticate_user(
+            self.storage,
+            user_id="khadija_account",
+            password="SecurePassword456!",
+        )
+        self.assertEqual(auth_doc.user_id, "khadija_account")
+        self.assertIsInstance(token, str)
+
+        # Verify token works and decodes to authenticated identity
+        identity = verify_access_token(token)
+        self.assertEqual(identity.user_id, "khadija_account")
+        self.assertEqual(identity.email, "khadija@example.com")
+
+        # 4. Authenticate with wrong password fails
+        with self.assertRaises(InvalidCredentialsError):
+            authenticate_user(
+                self.storage,
+                user_id="khadija_account",
+                password="IncorrectPassword!",
+            )
+
+        # 5. Authenticate non-existent user fails
+        with self.assertRaises(UserNotFoundError):
+            authenticate_user(
+                self.storage,
+                user_id="non_existent_user",
+                password="SomePassword123!",
+            )
 
 
 class TestJWTAuthentication(unittest.TestCase):
@@ -57,7 +154,6 @@ class TestJWTAuthentication(unittest.TestCase):
         self.assertIsNotNone(identity.issued_at)
 
     def test_expired_token_raises_token_expired_error(self):
-        # Create token that expired 10 minutes ago
         token = create_access_token(
             user_id="bob",
             expires_delta=timedelta(minutes=-10),
@@ -73,7 +169,6 @@ class TestJWTAuthentication(unittest.TestCase):
             secret_key=self.secret,
             algorithm=self.algo,
         )
-        # Tamper with the token signature (modify last characters)
         tampered_token = token[:-4] + "AAAA"
         with self.assertRaises(InvalidTokenError):
             verify_access_token(tampered_token, secret_key=self.secret, algorithm=self.algo)
@@ -89,13 +184,11 @@ class TestJWTAuthentication(unittest.TestCase):
             verify_access_token(token, secret_key=wrong_secret, algorithm=self.algo)
 
     def test_reject_none_algorithm_bypass_attack(self):
-        # Craft an unsigned token with alg='none'
         payload = {
             "sub": "attacker",
             "iat": int(datetime.now(timezone.utc).timestamp()),
             "exp": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
         }
-        # Encode with none algorithm
         none_token = jwt.encode(payload, key="", algorithm="none")
         with self.assertRaises(InvalidTokenError):
             verify_access_token(none_token, secret_key=self.secret, algorithm=self.algo)
@@ -111,12 +204,43 @@ class TestJWTAuthentication(unittest.TestCase):
             UserIdentity(user_id="user$injection")
 
 
+class TestSecretKeyValidation(unittest.TestCase):
+    """Test validation and protection against weak or placeholder JWT secret keys."""
+
+    def test_insecure_jwt_secret_rejected_in_validate_keys(self):
+        with patch.dict(os.environ, {
+            "GROQ_API_KEY": "gsk_valid_key",
+            "TAVILY_API_KEY": "tvly_valid_key",
+            "JWT_SECRET_KEY": "dev-insecure-secret-key-replace-in-production-32-chars!"
+        }):
+            cfg = Settings(
+                groq_api_key="gsk_valid_key",
+                tavily_api_key="tvly_valid_key",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                cfg.validate_keys()
+            self.assertIn("Insecure placeholder detected", str(ctx.exception))
+
+    def test_short_jwt_secret_rejected_in_validate_keys(self):
+        with patch.dict(os.environ, {
+            "GROQ_API_KEY": "gsk_valid_key",
+            "TAVILY_API_KEY": "tvly_valid_key",
+            "JWT_SECRET_KEY": "too-short-secret"
+        }):
+            cfg = Settings(
+                groq_api_key="gsk_valid_key",
+                tavily_api_key="tvly_valid_key",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                cfg.validate_keys()
+            self.assertIn("Key length is only", str(ctx.exception))
+
+
 class TestPerUserStorageIsolation(unittest.TestCase):
     """Test strict per-user dual-key storage isolation (PRD Lesson 5)."""
 
     def setUp(self):
-        # Force in-memory MongoMock for hermetic, fast testing
-        self.storage = ResearchStorage(force_mock=True, db_name="test_db")
+        self.storage = ResearchStorage(force_mock=True, db_name="test_storage_db")
         self.user_a = "user_alpha"
         self.user_b = "user_beta"
 
@@ -176,7 +300,6 @@ class TestPerUserStorageIsolation(unittest.TestCase):
         self.assertIsNotNone(still_exists)
 
     def test_list_user_sessions_only_returns_owners_data(self):
-        # Create 3 sessions for User A and 2 for User B
         for i in range(3):
             self.storage.save_session(ResearchSessionDocument(
                 session_id=f"sess_a_{i}",

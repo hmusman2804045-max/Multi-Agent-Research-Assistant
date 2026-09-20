@@ -1,14 +1,19 @@
-"""Authentication and Token Management Module (Phase 5).
+"""Authentication, Credential Verification, and Token Management Module (Phase 5).
 
-Handles JWT session token generation, verification, and user identity validation.
-Adheres to strict security standards:
-- Explicit algorithm restriction (prevents 'none' algorithm bypass attacks).
+Handles:
+- Cryptographic password hashing (PBKDF2-HMAC-SHA256 with 100,000 rounds and random salt).
+- Credential-gated user registration and authentication.
+- Cryptographic JWT session token generation, verification, and user identity validation.
+- Algorithm whitelisting (prevents 'none' algorithm bypass attacks).
 - Mandatory expiration ('exp') and issued-at ('iat') claims.
 - Strong typing with Pydantic.
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+import hashlib
+import hmac
+import secrets
+from typing import Any, Dict, Optional, Tuple
 import jwt
 from pydantic import BaseModel, Field, field_validator
 
@@ -16,6 +21,13 @@ from src.config import settings
 from src.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Security constants for password derivation
+PBKDF2_ROUNDS = 100_000
+SALT_BYTES = 16
+HASH_NAME = "sha256"
+MIN_PASSWORD_LENGTH = 8
+MAX_PASSWORD_LENGTH = 128
 
 
 class AuthError(Exception):
@@ -30,6 +42,26 @@ class TokenExpiredError(AuthError):
 
 class InvalidTokenError(AuthError):
     """Raised when a JWT token is malformed, invalid, or forged."""
+    pass
+
+
+class InvalidCredentialsError(AuthError):
+    """Raised when provided user credentials (username/password) are incorrect."""
+    pass
+
+
+class UserAlreadyExistsError(AuthError):
+    """Raised when registering a username that is already taken."""
+    pass
+
+
+class UserNotFoundError(AuthError):
+    """Raised when the requested user account does not exist."""
+    pass
+
+
+class WeakPasswordError(AuthError):
+    """Raised when a password fails policy requirements."""
     pass
 
 
@@ -51,6 +83,133 @@ class UserIdentity(BaseModel):
         if any(c in v_clean for c in ["\0", "$", "\n", "\r"]):
             raise ValueError("user_id contains prohibited characters")
         return v_clean
+
+
+def hash_password(password: str, salt_bytes: Optional[bytes] = None) -> Tuple[str, str]:
+    """Derive a secure PBKDF2-HMAC-SHA256 hash for a given password.
+
+    Args:
+        password: Raw plain text password.
+        salt_bytes: Optional raw salt bytes. If not provided, a random 16-byte salt is generated.
+
+    Returns:
+        Tuple of (salt_hex, hash_hex).
+    """
+    if not password or len(password) < MIN_PASSWORD_LENGTH:
+        raise WeakPasswordError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters long.")
+    if len(password) > MAX_PASSWORD_LENGTH:
+        raise WeakPasswordError(f"Password cannot exceed {MAX_PASSWORD_LENGTH} characters.")
+
+    salt = salt_bytes or secrets.token_bytes(SALT_BYTES)
+    derived = hashlib.pbkdf2_hmac(
+        HASH_NAME,
+        password.encode("utf-8"),
+        salt,
+        PBKDF2_ROUNDS
+    )
+    return salt.hex(), derived.hex()
+
+
+def verify_password(password: str, salt_hex: str, hash_hex: str) -> bool:
+    """Verify a plain password against a stored PBKDF2 hash using constant-time comparison.
+
+    Args:
+        password: The plain text password to verify.
+        salt_hex: The hex-encoded salt string.
+        hash_hex: The expected hex-encoded password hash.
+
+    Returns:
+        True if the password matches, False otherwise.
+    """
+    try:
+        salt = bytes.fromhex(salt_hex)
+        expected_hash = bytes.fromhex(hash_hex)
+        actual_hash = hashlib.pbkdf2_hmac(
+            HASH_NAME,
+            password.encode("utf-8"),
+            salt,
+            PBKDF2_ROUNDS
+        )
+        return hmac.compare_digest(actual_hash, expected_hash)
+    except Exception as e:
+        logger.warning(f"Password verification encountered error: {e}")
+        return False
+
+
+def register_user(
+    storage: Any,
+    user_id: str,
+    password: str,
+    email: Optional[str] = None,
+) -> Any:
+    """Register a new user account with credentials.
+
+    Args:
+        storage: ResearchStorage instance.
+        user_id: Requested unique user identifier.
+        password: Plain text password meeting policy requirements.
+        email: Optional email address.
+
+    Returns:
+        The created UserAccountDocument.
+
+    Raises:
+        UserAlreadyExistsError: If user_id is already registered.
+        WeakPasswordError: If password is too short or invalid.
+    """
+    clean_user = user_id.strip()
+    if not clean_user:
+        raise ValueError("user_id cannot be empty")
+
+    if storage.user_exists(clean_user):
+        raise UserAlreadyExistsError(f"User '{clean_user}' already exists.")
+
+    salt_hex, hash_hex = hash_password(password)
+
+    from src.storage import UserAccountDocument
+    user_doc = UserAccountDocument(
+        user_id=clean_user,
+        email=email.strip() if email else None,
+        password_hash=hash_hex,
+        salt=salt_hex,
+        created_at=datetime.now(timezone.utc),
+    )
+    storage.save_user(user_doc)
+    logger.info(f"User account '{clean_user}' successfully registered.")
+    return user_doc
+
+
+def authenticate_user(
+    storage: Any,
+    user_id: str,
+    password: str,
+) -> Tuple[Any, str]:
+    """Verify credentials and issue a signed JWT access token.
+
+    Args:
+        storage: ResearchStorage instance.
+        user_id: Username / user identifier.
+        password: Plain text password to check.
+
+    Returns:
+        Tuple of (UserAccountDocument, jwt_token_string).
+
+    Raises:
+        UserNotFoundError: If user_id does not exist.
+        InvalidCredentialsError: If password does not match.
+    """
+    clean_user = user_id.strip()
+    user_doc = storage.get_user(clean_user)
+    if not user_doc:
+        raise UserNotFoundError(f"User '{clean_user}' not found.")
+
+    if not verify_password(password, user_doc.salt, user_doc.password_hash):
+        logger.warning(f"Failed authentication attempt for user '{clean_user}'.")
+        raise InvalidCredentialsError("Invalid username or password.")
+
+    token = create_access_token(user_id=clean_user, email=user_doc.email)
+    logger.info(f"User '{clean_user}' authenticated successfully.")
+    return user_doc, token
 
 
 def create_access_token(

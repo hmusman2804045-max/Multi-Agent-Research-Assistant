@@ -1,5 +1,7 @@
 import sys
+import getpass
 import argparse
+from typing import Optional
 from colorama import init, Fore, Style
 
 # Ensure UTF-8 output on Windows consoles
@@ -11,11 +13,16 @@ if sys.platform == "win32":
         pass
 
 import logging
-import logging
 from src.logger import setup_logging
 from src.config import settings, BASE_DIR
 from src.pipeline import ResearchPipeline
-from src.auth import create_access_token, verify_access_token, AuthError, UserIdentity
+from src.auth import (
+    register_user,
+    authenticate_user,
+    verify_access_token,
+    AuthError,
+    UserIdentity,
+)
 from src.storage import ResearchStorage
 
 init(autoreset=True)
@@ -24,26 +31,58 @@ init(autoreset=True)
 def print_banner():
     print(Fore.CYAN + Style.BRIGHT + "=" * 75)
     print(Fore.CYAN + Style.BRIGHT + "   [*] Multi-Agent Research Assistant — Phase 5 (Auth & User Isolation)")
-    print(Fore.CYAN + Style.BRIGHT + "   🔐 Auth ➔ 🧠 Plan ➔ 🔍 Search ➔ 📝 Summarize ➔ 🔬 Fact-Check ➔ ✍️ Report")
+    print(Fore.CYAN + Style.BRIGHT + "   🔐 Auth Gate ➔ 🧠 Plan ➔ 🔍 Search ➔ 📝 Summarize ➔ 🔬 Verify ➔ ✍️ Report")
     print(Fore.CYAN + Style.BRIGHT + "=" * 75 + "\n")
 
 
-def resolve_user_identity(user_arg: str = None, token_arg: str = None) -> UserIdentity:
-    """Resolve user identity from either token or explicit user ID."""
-    if token_arg:
-        identity = verify_access_token(token_arg)
-        print(Fore.GREEN + f"🔑 Authenticated via JWT as user: {identity.user_id}\n")
+def handle_register(storage: ResearchStorage, user_arg: Optional[str], password_arg: Optional[str], email_arg: Optional[str]):
+    """Handle new user registration."""
+    username = user_arg or input(Fore.YELLOW + "Enter desired username: " + Fore.WHITE).strip()
+    if not username:
+        print(Fore.RED + "❌ Username cannot be empty.")
+        return
+
+    password = password_arg or getpass.getpass(Fore.YELLOW + "Enter password (min 8 chars): " + Fore.WHITE)
+    if not password:
+        print(Fore.RED + "❌ Password cannot be empty.")
+        return
+
+    try:
+        register_user(storage, user_id=username, password=password, email=email_arg)
+        _, token = authenticate_user(storage, user_id=username, password=password)
+        print(Fore.GREEN + Style.BRIGHT + f"\n✅ User '{username}' registered successfully!")
+        print(Fore.GREEN + f"🔑 Your signed JWT access token:\n")
+        print(Fore.YELLOW + token + "\n")
+        print(Fore.LIGHTBLACK_EX + "💡 Use this token in future requests with: --token <TOKEN>\n")
+    except AuthError as e:
+        print(Fore.RED + Style.BRIGHT + f"\n❌ Registration Failed: {e}\n")
+
+
+def handle_login(storage: ResearchStorage, user_arg: Optional[str], password_arg: Optional[str]) -> Optional[UserIdentity]:
+    """Handle user authentication via credentials."""
+    username = user_arg or input(Fore.YELLOW + "Enter username: " + Fore.WHITE).strip()
+    if not username:
+        print(Fore.RED + "❌ Username cannot be empty.")
+        return None
+
+    password = password_arg or getpass.getpass(Fore.YELLOW + "Enter password: " + Fore.WHITE)
+    if not password:
+        print(Fore.RED + "❌ Password cannot be empty.")
+        return None
+
+    try:
+        user_doc, token = authenticate_user(storage, user_id=username, password=password)
+        identity = verify_access_token(token)
+        print(Fore.GREEN + Style.BRIGHT + f"\n✅ Logged in successfully as '{identity.user_id}'!")
+        print(Fore.GREEN + f"🔑 Access Token:\n" + Fore.YELLOW + f"{token}\n")
         return identity
-    elif user_arg:
-        # Create an ephemeral or standard UserIdentity
-        return UserIdentity(user_id=user_arg.strip(), expires_at=None)
-    else:
-        # Default anonymous user
-        return UserIdentity(user_id="default_user", expires_at=None)
+    except AuthError as e:
+        print(Fore.RED + Style.BRIGHT + f"\n❌ Authentication Failed: {e}\n")
+        return None
 
 
 def handle_session_history(storage: ResearchStorage, user_id: str):
-    """Display session history for a user."""
+    """Display session history for an authenticated user."""
     print(Fore.YELLOW + f"📂 Research Sessions for User '{user_id}':\n")
     sessions = storage.list_user_sessions(user_id=user_id)
     if not sessions:
@@ -59,7 +98,7 @@ def handle_session_history(storage: ResearchStorage, user_id: str):
 
 
 def handle_load_session(storage: ResearchStorage, user_id: str, session_id: str):
-    """Retrieve and display a specific saved session."""
+    """Retrieve and display a specific saved session for an authenticated user."""
     session = storage.get_session(user_id=user_id, session_id=session_id)
     if not session:
         print(Fore.RED + f"❌ Session '{session_id}' not found for user '{user_id}' (Dual-key isolation enforced).")
@@ -74,7 +113,7 @@ def handle_load_session(storage: ResearchStorage, user_id: str, session_id: str)
 
 
 def handle_delete_session(storage: ResearchStorage, user_id: str, session_id: str):
-    """Delete a saved session."""
+    """Delete a saved session for an authenticated user."""
     deleted = storage.delete_session(user_id=user_id, session_id=session_id)
     if deleted:
         print(Fore.GREEN + f"✅ Successfully deleted session '{session_id}' for user '{user_id}'.")
@@ -82,9 +121,13 @@ def handle_delete_session(storage: ResearchStorage, user_id: str, session_id: st
         print(Fore.RED + f"❌ Session '{session_id}' not found or unauthorized for user '{user_id}'.")
 
 
-def run_pipeline(query: str, user_id: str = "default_user", storage: ResearchStorage = None):
+def run_pipeline(query: str, user_id: Optional[str] = None, storage: Optional[ResearchStorage] = None):
+    effective_user = user_id or "guest"
     print(Fore.YELLOW + f"📌 Research Question: " + Fore.WHITE + f"{query}")
-    print(Fore.LIGHTBLACK_EX + f"👤 Authenticated User: {user_id}\n")
+    if user_id:
+        print(Fore.GREEN + f"👤 Authenticated User: {user_id}\n")
+    else:
+        print(Fore.LIGHTBLACK_EX + f"👤 Guest Mode (Session not saved to persistent account)\n")
 
     try:
         pipeline = ResearchPipeline(storage=storage)
@@ -141,8 +184,11 @@ def run_pipeline(query: str, user_id: str = "default_user", storage: ResearchSto
 
         # Performance and Telemetry Box
         print(Fore.YELLOW + "\n📊 Granular Pipeline Telemetry:")
-        print(Fore.WHITE + f"  • Session ID:              {result.session_id}")
-        print(Fore.WHITE + f"  • User ID:                 {result.user_id}")
+        if result.session_id:
+            print(Fore.WHITE + f"  • Session ID:              {result.session_id}")
+            print(Fore.WHITE + f"  • User ID:                 {result.user_id}")
+        else:
+            print(Fore.LIGHTBLACK_EX + f"  • Session Storage:         Skipped (Guest/Unauthenticated)")
         print(Fore.WHITE + f"  • Step 1 (Planning):       {result.planning_time_sec}s")
         print(Fore.WHITE + f"  • Step 2 (Multi-Search):   {result.search_time_sec}s")
         print(Fore.WHITE + f"  • Step 3 (Summarization):  {result.summarization_time_sec}s")
@@ -168,12 +214,15 @@ def run_pipeline(query: str, user_id: str = "default_user", storage: ResearchSto
 def main():
     parser = argparse.ArgumentParser(description="Multi-Agent Research Assistant (Phase 5 CLI - Auth & User Isolation)")
     parser.add_argument("-q", "--query", type=str, help="Research question to process")
-    parser.add_argument("-u", "--user", type=str, default=None, help="User identifier for isolated session storage")
+    parser.add_argument("-u", "--user", type=str, default=None, help="Username (for register or login)")
+    parser.add_argument("-p", "--password", type=str, default=None, help="Password (for register or login)")
+    parser.add_argument("--email", type=str, default=None, help="Optional email for registration")
+    parser.add_argument("--register", action="store_true", help="Register a new user account")
+    parser.add_argument("--login", action="store_true", help="Authenticate with credentials and obtain a JWT token")
     parser.add_argument("--token", type=str, default=None, help="Signed JWT access token for authentication")
-    parser.add_argument("--generate-token", type=str, metavar="USER_ID", help="Generate a valid signed JWT for a given user ID")
-    parser.add_argument("--history", action="store_true", help="List past research session history for the current user")
-    parser.add_argument("--load-session", type=str, metavar="SESSION_ID", help="Load and view a past research session report")
-    parser.add_argument("--delete-session", type=str, metavar="SESSION_ID", help="Delete a past research session")
+    parser.add_argument("--history", action="store_true", help="List past research session history (Authentication Required)")
+    parser.add_argument("--load-session", type=str, metavar="SESSION_ID", help="Load and view a past session report (Authentication Required)")
+    parser.add_argument("--delete-session", type=str, metavar="SESSION_ID", help="Delete a past research session (Authentication Required)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging")
     args = parser.parse_args()
 
@@ -182,41 +231,58 @@ def main():
     setup_logging(level=log_level)
 
     print_banner()
-
-    # Handle token generation helper
-    if args.generate_token:
-        try:
-            token = create_access_token(user_id=args.generate_token)
-            print(Fore.GREEN + f"✅ Generated JWT Token for User '{args.generate_token}':\n")
-            print(Fore.YELLOW + token + "\n")
-            return
-        except Exception as e:
-            print(Fore.RED + f"❌ Failed to generate token: {e}")
-            return
-
-    # Resolve User Identity
-    try:
-        user_identity = resolve_user_identity(user_arg=args.user, token_arg=args.token)
-    except AuthError as e:
-        print(Fore.RED + Style.BRIGHT + f"❌ Authentication Error: {e}")
-        sys.exit(1)
-
     storage = ResearchStorage()
 
+    # Flow 1: Register
+    if args.register:
+        handle_register(storage, user_arg=args.user, password_arg=args.password, email_arg=args.email)
+        return
+
+    # Flow 2: Authenticate Identity
+    authenticated_identity: Optional[UserIdentity] = None
+
+    if args.token:
+        try:
+            authenticated_identity = verify_access_token(args.token)
+            print(Fore.GREEN + f"🔑 Authenticated via JWT token as user: {authenticated_identity.user_id}\n")
+        except AuthError as e:
+            print(Fore.RED + Style.BRIGHT + f"❌ Authentication Error: {e}")
+            sys.exit(1)
+    elif args.login:
+        authenticated_identity = handle_login(storage, user_arg=args.user, password_arg=args.password)
+        if not authenticated_identity:
+            sys.exit(1)
+
+    # Flow 3: Protected Session Actions (Strictly require authenticated identity)
     if args.history:
-        handle_session_history(storage, user_identity.user_id)
+        if not authenticated_identity:
+            print(Fore.RED + Style.BRIGHT + "❌ Authentication Required: Viewing session history requires authentication.\n"
+                  "Please use --login or pass a valid --token <JWT>.")
+            sys.exit(1)
+        handle_session_history(storage, authenticated_identity.user_id)
         return
 
     if args.load_session:
-        handle_load_session(storage, user_identity.user_id, args.load_session)
+        if not authenticated_identity:
+            print(Fore.RED + Style.BRIGHT + "❌ Authentication Required: Loading session reports requires authentication.\n"
+                  "Please use --login or pass a valid --token <JWT>.")
+            sys.exit(1)
+        handle_load_session(storage, authenticated_identity.user_id, args.load_session)
         return
 
     if args.delete_session:
-        handle_delete_session(storage, user_identity.user_id, args.delete_session)
+        if not authenticated_identity:
+            print(Fore.RED + Style.BRIGHT + "❌ Authentication Required: Deleting sessions requires authentication.\n"
+                  "Please use --login or pass a valid --token <JWT>.")
+            sys.exit(1)
+        handle_delete_session(storage, authenticated_identity.user_id, args.delete_session)
         return
 
+    # Flow 4: Execute Research Pipeline
+    user_id = authenticated_identity.user_id if authenticated_identity else None
+
     if args.query:
-        run_pipeline(args.query, user_id=user_identity.user_id, storage=storage)
+        run_pipeline(args.query, user_id=user_id, storage=storage)
     else:
         try:
             while True:
@@ -225,7 +291,7 @@ def main():
                     print(Fore.CYAN + "\nExiting. Happy researching! 👋")
                     break
                 print()
-                run_pipeline(user_input.strip(), user_id=user_identity.user_id, storage=storage)
+                run_pipeline(user_input.strip(), user_id=user_id, storage=storage)
         except KeyboardInterrupt:
             print(Fore.CYAN + "\n\nExiting. Happy researching! 👋")
             sys.exit(0)

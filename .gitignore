@@ -1,7 +1,8 @@
-# Environment variables
+# Environment variables & secrets
 .env
 .env.local
 .env.*.local
+.jwt_secret
 
 # Python
 __pycache__/

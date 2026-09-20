@@ -238,41 +238,47 @@ MAX_CONTENT_CHARS_PER_SOURCE=1500
 # Database & Authentication (Phase 5)
 MONGODB_URI=
 MONGODB_DB_NAME=research_assistant
-JWT_SECRET_KEY=change-this-to-a-secure-random-secret-key-at-least-32-chars
+# Optional: If left blank, a cryptographically strong secret is generated and stored locally in .jwt_secret
+JWT_SECRET_KEY=
 JWT_ALGORITHM=HS256
 AUTH_TOKEN_EXPIRE_MINUTES=1440
 ```
 
 ### 4. Run the Research Assistant CLI
 
-**Generate a Signed JWT Token:**
+**Register a New User Account (with PBKDF2 Hashed Password):**
 ```bash
-python main.py --generate-token alice_researcher
+python main.py --register -u alice_researcher -p "MySecurePassword123!"
 ```
 
-**Run Research with Authenticated User Identity:**
+**Authenticate & Obtain a Signed JWT Token:**
 ```bash
-python main.py -u alice_researcher -q "What is quantum error correction surface code?"
+python main.py --login -u alice_researcher -p "MySecurePassword123!"
 ```
 
-**Run Research with Signed JWT Token:**
+**Run Research with Signed JWT Token (Session Auto-Saved to Private Account):**
 ```bash
-python main.py --token <YOUR_JWT_TOKEN> -q "Explain the latest fusion energy breakthroughs"
+python main.py --token <YOUR_JWT_TOKEN> -q "What is quantum error correction surface code?"
 ```
 
-**View Saved Research History:**
+**View Saved Private Research History (Authentication Required):**
 ```bash
-python main.py -u alice_researcher --history
+python main.py --token <YOUR_JWT_TOKEN> --history
 ```
 
-**Load a Specific Past Session Report:**
+**Load a Specific Saved Session Report (Authentication Required):**
 ```bash
-python main.py -u alice_researcher --load-session <SESSION_ID>
+python main.py --token <YOUR_JWT_TOKEN> --load-session <SESSION_ID>
 ```
 
-**Delete a Past Session:**
+**Delete a Saved Session (Authentication Required):**
 ```bash
-python main.py -u alice_researcher --delete-session <SESSION_ID>
+python main.py --token <YOUR_JWT_TOKEN> --delete-session <SESSION_ID>
+```
+
+**Run in Guest / Anonymous Mode (No History Saved):**
+```bash
+python main.py -q "Explain how gradient descent works"
 ```
 
 ### 5. Run Automated Tests

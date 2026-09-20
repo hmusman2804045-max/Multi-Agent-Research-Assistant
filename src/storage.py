@@ -63,6 +63,20 @@ class ResearchSessionDocument(BaseModel):
         return _sanitize_key(v, "session_id")
 
 
+class UserAccountDocument(BaseModel):
+    """Schema for a persisted user account with hashed password."""
+    user_id: str = Field(...)
+    email: Optional[str] = Field(default=None)
+    password_hash: str = Field(...)
+    salt: str = Field(...)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("user_id")
+    @classmethod
+    def validate_user(cls, v: str) -> str:
+        return _sanitize_key(v, "user_id")
+
+
 class ResearchStorage:
     """Database client wrapper ensuring strict per-user dual-key isolation."""
 
@@ -98,10 +112,11 @@ class ResearchStorage:
 
         self.db: Database = self.client[self.db_name]
         self.sessions_col: Collection = self.db["research_sessions"]
+        self.users_col: Collection = self.db["users"]
         self._ensure_indexes()
 
     def _ensure_indexes(self) -> None:
-        """Create required indexes for dual-key querying and performance."""
+        """Create required indexes for dual-key querying, user lookup, and performance."""
         try:
             # Compound unique index: user_id + session_id (PRD Lesson 5)
             self.sessions_col.create_index(
@@ -114,9 +129,41 @@ class ResearchStorage:
                 [("user_id", pymongo.ASCENDING), ("created_at", pymongo.DESCENDING)],
                 name="idx_user_created_at",
             )
+            # Unique index on user_id for users collection
+            self.users_col.create_index(
+                [("user_id", pymongo.ASCENDING)],
+                unique=True,
+                name="idx_users_user_id_unique",
+            )
             logger.debug("MongoDB indexes initialized successfully.")
         except Exception as e:
             logger.warning(f"Could not create indexes on storage collection: {e}")
+
+    def save_user(self, user: UserAccountDocument) -> str:
+        """Persist a registered user account."""
+        user_id = _sanitize_key(user.user_id, "user_id")
+        doc = user.model_dump()
+        self.users_col.update_one(
+            {"user_id": user_id},
+            {"$set": doc},
+            upsert=True,
+        )
+        logger.info(f"Saved user account for '{user_id}'.")
+        return user_id
+
+    def get_user(self, user_id: str) -> Optional[UserAccountDocument]:
+        """Retrieve a user account by user_id."""
+        clean_user = _sanitize_key(user_id, "user_id")
+        doc = self.users_col.find_one({"user_id": clean_user})
+        if not doc:
+            return None
+        doc.pop("_id", None)
+        return UserAccountDocument(**doc)
+
+    def user_exists(self, user_id: str) -> bool:
+        """Check if a user account already exists."""
+        clean_user = _sanitize_key(user_id, "user_id")
+        return self.users_col.count_documents({"user_id": clean_user}) > 0
 
     def save_session(self, session: ResearchSessionDocument) -> str:
         """Persist or update a research session document using dual-key filtering.

@@ -13,6 +13,42 @@ load_dotenv(dotenv_path=BASE_DIR / ".env")
 setup_logging()
 
 
+import secrets
+
+# Known insecure placeholder patterns
+INSECURE_SECRET_PATTERNS = [
+    "your_jwt_secret",
+    "change-this",
+    "dev-insecure",
+    "replace-in-production",
+    "secret-key",
+]
+
+
+def _get_jwt_secret() -> str:
+    """Retrieve JWT secret from environment or load/generate a secure local gitignored secret."""
+    env_secret = os.getenv("JWT_SECRET_KEY", "").strip()
+    if env_secret:
+        return env_secret
+
+    secret_file = BASE_DIR / ".jwt_secret"
+    if secret_file.exists():
+        try:
+            cached_secret = secret_file.read_text(encoding="utf-8").strip()
+            if len(cached_secret) >= 32:
+                return cached_secret
+        except Exception:
+            pass
+
+    # In absence of configured secret, generate a cryptographically strong local secret and save to .jwt_secret
+    new_secret = secrets.token_urlsafe(32)
+    try:
+        secret_file.write_text(new_secret, encoding="utf-8")
+    except Exception:
+        pass
+    return new_secret
+
+
 class Settings(BaseModel):
     """Application Settings and Configuration."""
     groq_api_key: str = Field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
@@ -36,18 +72,30 @@ class Settings(BaseModel):
     # Database & Authentication (Phase 5)
     mongodb_uri: str = Field(default_factory=lambda: os.getenv("MONGODB_URI", ""))
     mongodb_db_name: str = Field(default_factory=lambda: os.getenv("MONGODB_DB_NAME", "research_assistant"))
-    jwt_secret_key: str = Field(default_factory=lambda: os.getenv("JWT_SECRET_KEY", "dev-insecure-secret-key-replace-in-production-32-chars!"))
+    jwt_secret_key: str = Field(default_factory=_get_jwt_secret)
     jwt_algorithm: str = Field(default_factory=lambda: os.getenv("JWT_ALGORITHM", "HS256"))
     auth_token_expire_minutes: int = Field(default_factory=lambda: int(os.getenv("AUTH_TOKEN_EXPIRE_MINUTES", "1440")))
 
     def validate_keys(self) -> None:
-        """Ensure required API keys are populated."""
+        """Ensure required API keys and security credentials are valid."""
         missing = []
         if not self.groq_api_key or self.groq_api_key == "your_groq_api_key_here":
             missing.append("GROQ_API_KEY")
         if not self.tavily_api_key or self.tavily_api_key == "your_tavily_api_key_here":
             missing.append("TAVILY_API_KEY")
         
+        # Check for weak or placeholder JWT secret if explicitly set in environment
+        env_jwt = os.getenv("JWT_SECRET_KEY", "").strip()
+        if env_jwt:
+            if len(env_jwt) < 32:
+                raise ValueError(
+                    f"Insecure JWT_SECRET_KEY: Key length is only {len(env_jwt)} characters (must be >= 32)."
+                )
+            if any(p in env_jwt.lower() for p in INSECURE_SECRET_PATTERNS):
+                raise ValueError(
+                    "Insecure placeholder detected in JWT_SECRET_KEY. Please provide a secure random key."
+                )
+
         if missing:
             raise ValueError(
                 f"Missing or placeholder API keys found for: {', '.join(missing)}.\n"
