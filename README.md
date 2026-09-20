@@ -18,8 +18,13 @@ license: mit
 [![JWT](https://img.shields.io/badge/Auth-PyJWT%20(HS256)-blue.svg)](https://pyjwt.readthedocs.io/)
 [![Rate Limiter](https://img.shields.io/badge/Protection-Sliding%20Window%20%2B%20Lockout-red.svg)](https://github.com/hmusman2804045-max/Multi-Agent-Research-Assistant)
 [![Phase](https://img.shields.io/badge/Status-Phase%207%20(Frontend%20%26%20Deployment)-success.svg)](https://github.com/hmusman2804045-max/Multi-Agent-Research-Assistant)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-research.hmuhammadusman.com-emerald.svg)](https://research.hmuhammadusman.com)
+[![HuggingFace Space](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Space-yellow.svg)](https://huggingface.co/spaces/usman-ai-dev/multi-agent-research-assistant)
 
 An autonomous multi-agent AI system designed to conduct live web research, distill factual claims, cross-reference sources, detect contradictions, generate grounded, cited research reports, securely isolate per-user research history, and enforce robust per-user daily search quotas, sliding-window RPM burst limits, and authentication brute-force defenses.
+
+> 🌐 **Live Web Application**: [https://research.hmuhammadusman.com](https://research.hmuhammadusman.com)  
+> 🤗 **Hugging Face Space**: [https://huggingface.co/spaces/usman-ai-dev/multi-agent-research-assistant](https://huggingface.co/spaces/usman-ai-dev/multi-agent-research-assistant)
 
 ---
 
