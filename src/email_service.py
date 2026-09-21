@@ -84,7 +84,10 @@ def send_password_reset_email(to_email: str, reset_link: str) -> bool:
     try:
         response = requests.post(RESEND_API_URL, json=payload, headers=headers, timeout=10.0)
         if response.status_code in [200, 201]:
-            logger.info(f"Password reset email sent successfully to '{clean_email}'.")
+            logger.info(
+                f"Password reset email sent successfully to '{clean_email}' "
+                f"(Status {response.status_code}): {response.text}"
+            )
             return True
         else:
             logger.error(

@@ -392,6 +392,7 @@ def request_password_reset(
 
     start_time = time.monotonic()
     clean_id = user_id_or_email.strip()
+    logger.info(f"Password reset requested for identifier: '{clean_id}'")
 
     # 1. Look up user account first (supports username or email)
     user = storage.find_user_by_email_or_id(clean_id)
@@ -423,13 +424,16 @@ def request_password_reset(
             reset_link = f"{base_url}/reset-password?token={raw_token}"
         else:
             reset_link = f"python main.py --reset-password {raw_token}"
-        send_password_reset_email(to_email=user.email, reset_link=reset_link)
-        logger.info(f"Initiated password reset for user '{user.user_id}'.")
+        sent = send_password_reset_email(to_email=user.email, reset_link=reset_link)
+        if sent:
+            logger.info(f"Password reset email dispatched successfully for user '{user.user_id}' ({user.email}).")
+        else:
+            logger.error(f"Password reset email dispatch failed for user '{user.user_id}' ({user.email}).")
     else:
         # Dummy token creation for state consistency
         _ = secrets.token_urlsafe(32)
         logger.info(
-            f"Password reset requested for non-existent or email-less identifier. Skipped delivery."
+            f"Password reset requested for non-existent or email-less identifier '{clean_id}'. Skipped delivery."
         )
 
     # 4. Anti-enumeration timing equalization floor (closes network vs local timing side-channel)

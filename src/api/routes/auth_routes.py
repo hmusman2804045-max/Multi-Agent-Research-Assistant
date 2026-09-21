@@ -9,6 +9,7 @@ and are never reimplemented here.
 from fastapi import APIRouter, Depends, status
 
 from src.api.deps import get_rate_limiter, get_storage
+from src.logger import get_logger
 from src.api.schemas import (
     AuthResponse,
     ForgotPasswordRequest,
@@ -17,6 +18,8 @@ from src.api.schemas import (
     RegisterRequest,
     ResetPasswordRequest,
 )
+
+logger = get_logger(__name__)
 from src.auth import (
     authenticate_user,
     confirm_password_reset,
@@ -94,6 +97,7 @@ def forgot_password(
     call in full - it must never short-circuit to a faster response path, since a faster
     reply for a non-existent account is exactly the timing side-channel the floor closes.
     """
+    logger.info(f"POST /api/auth/forgot-password received for identifier: '{payload.identifier}'")
     message = request_password_reset(
         storage,
         user_id_or_email=payload.identifier,
